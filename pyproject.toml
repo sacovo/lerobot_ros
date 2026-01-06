@@ -1,0 +1,29 @@
+[project]
+name = "lerobot-ros"
+version = "0.1.0"
+description = "Add your description here"
+license = "MIT"
+readme = "README.md"
+dependencies = [
+    "lerobot>=0.4.2",
+    "pytest>=9.0.2",
+    "rust-py-timer>=0.1.0",
+]
+
+[project.optional-dependencies]
+so101 = [
+    "lerobot[feetech]>=0.4.2",
+]
+smolvla = [
+    "lerobot[smolvla]>=0.4.2",
+]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.11.2",
+]
+
+[tool.uv.sources]
+lerobot = { git = "https://github.com/huggingface/lerobot.git" }
+
+

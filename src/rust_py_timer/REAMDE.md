@@ -1,0 +1,1 @@
+Rust based implementation of a timer. Collects ros2 messages and calls a callback function at a fixed intervall with the latest message for each topic.

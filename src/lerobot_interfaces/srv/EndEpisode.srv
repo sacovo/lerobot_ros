@@ -1,0 +1,4 @@
+bool discard
+int32 episde_id
+---
+int32 frames

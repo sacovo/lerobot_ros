@@ -1,0 +1,22 @@
+/so101_leader_node:
+  ros__parameters:
+    calibration_dir: lerobot_ros/config/so101/calibrations
+    frequency: 20.0
+    port: /dev/ttyACM0
+    start_type_description_service: true
+    teleoperator_id: so101_leader
+    use_sim_time: false
+
+/so101_follower_node:
+  ros__parameters:
+    calibration_dir: lerobot_ros/config/so101/calibrations
+    frequency: 20.0
+    joint_names:
+    - shoulder_pan
+    - shoulder_lift
+    - elbow_flex
+    - wrist_flex
+    - wrist_roll
+    - gripper
+    port: /dev/ttyACM1
+    robot_id: so101_follower
