@@ -1,33 +1,29 @@
 import os
 import threading
 import time
+from typing import List
 
 import rclpy
-
-from ares_reach.config import load_toml_dict, parse_config
-from ares_reach.ros_torch_utils import TensorToRosConverter
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.robot_utils import precise_sleep
 
-# import pyo3_example
-
-
-
-def my_callback(x: int) -> int:
-    print(f"Callback called with {x}")
-    return x + 1
+from .config import load_toml_dict, parse_config
+from .ros_torch_utils import TensorToRosConverter
 
 
 def main():
     rclpy.init()
     node = rclpy.create_node("replay_node")
+    logger = node.get_logger()
+
+    # Dataset parameters
     root = node.declare_parameter("root", "").get_parameter_value().string_value
-    ds = LeRobotDataset(
-        node.declare_parameter("repo_id", "").get_parameter_value().string_value,
-        tolerance_s=0.001,
-        root=root if root else None,
-    )
-    node.get_logger().info(f"Loaded dataset: {ds}")
+    repo_id = node.declare_parameter("repo_id", "").get_parameter_value().string_value
+
+    ds = LeRobotDataset(repo_id, tolerance_s=0.001, root=root if root else None)
+    logger.info(f"Loaded dataset: {ds}")
+
+    # Config
     config_path = (
         node.declare_parameter(
             "config", os.getenv("CONFIG_PATH", "config/hufi_arm.toml")
@@ -36,49 +32,59 @@ def main():
         .string_value
     )
     config = parse_config(load_toml_dict(config_path))
-    node.get_logger().info(f"Loaded config from {config_path}")
-    node.get_logger().info(f"Config: {config}")
+    logger.info(f"Loaded config from {config_path}")
 
-    convertor = TensorToRosConverter(config.topics)
-
-    actions = ds.hf_dataset.select_columns("action")
-
-    observations = ds.hf_dataset.select_columns("observation.state")
-
-    images = ds.features.get("observation.image", None)
-
-    publishers = {}
-
-    for topic_name, topic in config.topics.items():
-        publishers[topic_name] = node.create_publisher(topic.msg_type(), topic_name, 10)
-
-    def ros_thread_func():
-        rclpy.spin(node)
-
-    ros_thread = threading.Thread(target=ros_thread_func, daemon=True)
-    ros_thread.start()
-    iterations = (
-        node.declare_parameter("iterations", 1).get_parameter_value().integer_value
+    # Replay parameters
+    repetitions = (
+        node.declare_parameter("repetitions", 1).get_parameter_value().integer_value
     )
 
-    for _ in range(iterations):
-        precise_sleep(1 / ds.fps)
-        for i, data in enumerate(ds.hf_dataset):
-            print(data)
-            action = data["action"]
-            observation = data["observation.state"]
-            start_episode_t = time.perf_counter()
+    all_episodes = list(ds.meta.episodes["episode_index"])
 
-            node.get_logger().info(f"Step {i}: {action}")
-            action_array = actions[i]["action"]
+    episodes_param = (
+        node.declare_parameter("episodes", []).get_parameter_value().integer_array_value
+    )
+    episodes: List[int] = list(episodes_param) if episodes_param else all_episodes
 
-            msgs = convertor.convert(action)
-            for topic, msg in msgs.items():
-                publishers[topic].publish(msg)
+    logger.info(f"Replaying episodes {episodes} with {repetitions} repetition(s)")
 
-            dt_s = time.perf_counter() - start_episode_t
-            precise_sleep(1 / ds.fps - dt_s)
+    # Setup publishers
+    converter = TensorToRosConverter(config.topics)
+    publishers = {
+        topic_name: node.create_publisher(topic.msg_type(), topic_name, 10)
+        for topic_name, topic in config.topics.items()
+    }
 
+    # Spin ROS in background thread
+    ros_thread = threading.Thread(target=lambda: rclpy.spin(node), daemon=True)
+    ros_thread.start()
+
+    frame_duration = 1.0 / ds.fps
+
+    for rep in range(repetitions):
+        logger.info(f"Repetition {rep + 1}/{repetitions}")
+
+        for episode_idx in episodes:
+            episode_data = ds.hf_dataset.filter(
+                lambda x: x["episode_index"] == episode_idx
+            )
+            logger.info(f"Playing episode {episode_idx} ({len(episode_data)} frames)")
+
+            precise_sleep(frame_duration)
+
+            for frame_idx, frame in enumerate(episode_data):
+                start_t = time.perf_counter()
+
+                action = frame["action"]
+                msgs = converter.convert(action)
+
+                for topic, msg in msgs.items():
+                    publishers[topic].publish(msg)
+
+                elapsed = time.perf_counter() - start_t
+                precise_sleep(frame_duration - elapsed)
+
+    logger.info("Replay complete")
     node.destroy_node()
     rclpy.shutdown()
 

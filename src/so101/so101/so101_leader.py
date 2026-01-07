@@ -3,8 +3,8 @@ from pathlib import Path
 import rclpy
 from lerobot.teleoperators.so101_leader import SO101Leader, SO101LeaderConfig
 from rclpy.node import Node
-from std_msgs.msg import String
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 

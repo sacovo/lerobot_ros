@@ -27,6 +27,7 @@ setup(
             "episode_tracker = lerobot_ros.episode_tracker_node:main",
             "so101_leader = lerobot_ros.so101.leader:main",
             "so101_follower = lerobot_ros.so101.follower:main",
+            "replay = lerobot_ros.replay:main",
         ],
     },
 )

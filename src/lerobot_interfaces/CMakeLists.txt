@@ -34,6 +34,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/NewDataset.srv"
   "srv/SetActivePolicy.srv"
   "srv/StartEpisode.srv"
+  "msg/TaskProgress.msg"
   DEPENDENCIES geometry_msgs
  )
 

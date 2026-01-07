@@ -7,12 +7,11 @@ arrays. This module handles the common fixed-layout messages.
 
 from __future__ import annotations
 
-import torch
 import numpy as np
 import sensor_msgs.msg as sensor_msgs
+import torch
 
-from .base import generate_topic_classes_from_layouts, BaseTopic
-
+from .base import BaseTopic, generate_topic_classes_from_layouts
 
 # Field layouts for sensor messages
 # Each entry: message_class -> list of field paths

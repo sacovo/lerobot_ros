@@ -125,6 +125,17 @@ ros2 service call /set_policy_running std_srvs/srv/SetBool 'data: true'
 ros2 service call /set_policy_running std_srvs/srv/SetBool 'data: false'
 ```
 
+You can also replay a dataset to check whether the actions have been recorded correctly. Be aware that this will publish actions to a topic that controls your robot!
+
+```bash
+
+ros2 run lerobot_ros replay --ros-args\
+     -p repo_id:=fhnwrover/so101-ros-red-ring-all \
+     -p episode:=[2,3,5] \
+     -p repetions:=3 \
+     -p config:=lerobot_ros/config/so101/so101.toml
+```
+
 ## SO101
 
 The SO101 is a small and affordable robotic manipulator that has good integration with LeRobot. A manual and parts list can be found in this repository: https://github.com/TheRobotStudio/SO-ARM100

@@ -1,9 +1,10 @@
+from io import BytesIO
+
 import cv2
 import numpy as np
 import torch
 from PIL import Image as PILImage
 from sensor_msgs.msg import CompressedImage, Image
-from io import BytesIO
 
 from .base import BaseTopic, prefix_names
 

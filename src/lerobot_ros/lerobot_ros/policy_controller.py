@@ -4,28 +4,24 @@ from collections import deque
 from queue import Queue
 from typing import Dict, Optional, Tuple
 
-from lerobot_interfaces.srv import SetActivePolicy, Calibrate, ListPolicies
 import rclpy
 import rclpy.executors
 import torch
-from rclpy.node import Node
-from std_msgs.msg import String
-from std_srvs.srv import SetBool, Trigger
-
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.policies.factory import (
-    make_policy,
-    make_pre_post_processors,
-)
+from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.processor.pipeline import DataProcessorPipeline
 from lerobot.utils.import_utils import register_third_party_plugins
+from lerobot_interfaces.msg._task_progress import TaskProgress
+from lerobot_interfaces.srv import Calibrate, ListPolicies, SetActivePolicy
+from rclpy.node import Node
+from std_msgs.msg import Empty, String
+from std_srvs.srv import SetBool, Trigger
 
 from .config import PolicyConfig, ROSFeatureConfig, load_toml_dict, parse_config
 from .ros_torch_utils import BaseTopic, TensorToRosConverter, prepare_frame
 from .subscriber import Ros2Feature
-
 
 register_third_party_plugins()
 
@@ -86,11 +82,26 @@ class PolicyController:
         self.task_subscrber = node.create_subscription(
             String, "/task", self.task_callback, 10
         )
+        self.task_completion_threshold = (
+            node.declare_parameter("task_completion_threshold", 0.9)
+            .get_parameter_value()
+            .double_value
+        )
+
+        self.policy_done_pub = self.node.create_publisher(
+            Empty,
+            "/policy_control/done",
+            10,
+        )
+        self.progress_subscriber = node.create_subscription(
+            TaskProgress, "/episode_progress", self.progress_callback, 10
+        )
 
         # Action and observation queue
 
         self.setup_action_topics(config.topics)
 
+        self.active_policy_pub = node.create_publisher(String, "/active_policy", 10)
         self.convertor.register_frame_callback(self.frame_callback)
         self.convertor.setup_subscribers()
 
@@ -126,6 +137,19 @@ class PolicyController:
     def task_callback(self, msg: String):
         task = msg.data
         self.task = task
+
+    def progress_callback(self, msg: TaskProgress):
+        if msg.policy_name != self.active_policy_name:
+            return
+        self.node.get_logger().info(
+            f"Received progress update for policy {msg.policy_name}: {msg.progress}"
+        )
+        if msg.progress >= self.task_completion_threshold:
+            self.node.get_logger().info(
+                f"Task {self.task} completed by policy {msg.policy_name}."
+            )
+            self.policy_done_pub.publish(Empty())
+            self.end_task()
 
     def trigger_calibration_service(
         self, request: Calibrate.Request, response: Calibrate.Response
@@ -180,15 +204,19 @@ class PolicyController:
     def set_policy_service(
         self, request: SetActivePolicy.Request, response: SetActivePolicy.Response
     ):
-        self.set_policy(request.policy_name)
-        response.success = True
-        return response
+        try:
+            self.set_policy(request.policy_name)
+            response.success = True
+            return response
+        except ValueError:
+            response.success = False
+            return response
 
     def set_policy(self, policy_name: str):
         if policy_name not in self.policies:
             raise ValueError(f"Policy {policy_name} is not loaded.")
         self.active_policy_name = policy_name
-        self._predicted_timesteps.clear()
+        self.active_policy_pub.publish(String(data=policy_name))
 
     def end_task(self):
         self.active_policy_name = None
@@ -334,7 +362,7 @@ class PolicyController:
                 else:
                     batch[key] = [f[key] for f in frames]
 
-            policy = self.active_policy
+            policy = self.get_active_policy()[1]
             if hasattr(policy, "test_time_train"):
                 policy.test_time_train(batch)
                 self.node.get_logger().info("Calibration completed.")

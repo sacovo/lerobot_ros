@@ -1,11 +1,10 @@
 from pathlib import Path
 from typing import cast
 
-from ament_index_python import get_package_share_directory
 import rclpy
-from sensor_msgs.msg import JointState
-from rclpy.node import Node
 from lerobot.robots.so101_follower import SO101Follower, SO101FollowerConfig
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
 
 
 class ROSSO101Follower:

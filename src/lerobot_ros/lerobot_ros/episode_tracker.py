@@ -1,17 +1,16 @@
-from typing import Optional
 import datetime
 import logging
 import random
+from typing import Optional
 
 import click
 import torch
 from huggingface_hub import PyTorchModelHubMixin
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.utils.constants import ACTION, OBS_STATE
 from torch import nn
 from torch.utils.data import Subset
 from torchvision.models import ResNet18_Weights, resnet18
-
-from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
-from lerobot.utils.constants import ACTION, OBS_STATE
 
 # Configure logging
 logging.basicConfig(

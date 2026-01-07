@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
-from std_msgs import msg as std_msgs
-import torch
-from .base import BaseTopic, prefix_names
 
+import torch
+from std_msgs import msg as std_msgs
+
+from .base import BaseTopic, prefix_names
 
 # Mapping from type name patterns to torch dtypes
 _TORCH_DTYPE_MAP: dict[str, torch.dtype] = {

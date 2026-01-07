@@ -10,11 +10,11 @@ from torch.distributed.algorithms.join import Join
 from .base import (
     BaseTopic,
     clean_topic_name,
-    prefix_names,
-    get_nested_attr,
-    set_nested_attr,
-    make_layout_topic,
     generate_topic_classes_from_layouts,
+    get_nested_attr,
+    make_layout_topic,
+    prefix_names,
+    set_nested_attr,
 )
 
 # Import all topic modules to register them in BaseTopic.MAPPINGS

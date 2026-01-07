@@ -6,10 +6,9 @@ import tty
 from typing import cast
 
 import rclpy
+from lerobot_interfaces.srv import EndEpisode, NewDataset, StartEpisode
 from rclpy.node import Node
 from std_srvs.srv import Trigger
-
-from lerobot_interfaces.srv import EndEpisode, NewDataset, StartEpisode
 
 
 def call_service(node: Node, service_name: str, request, srv_type):

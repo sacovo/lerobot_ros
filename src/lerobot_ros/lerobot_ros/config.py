@@ -26,6 +26,7 @@ class PolicyConfig:
         device: str,
         ds_repo_id: str,
         ds_root: Optional[str] = None,
+        progress_model: str | None = None,
         rename_map: Optional[Dict[str, str]] = None,
         policy_config: Optional[dict] = None,
         action_queue_size: int = 30,
@@ -39,6 +40,7 @@ class PolicyConfig:
         self.policy_config = policy_config or {}
         self.action_queue_size = action_queue_size
         self.action_smoothing_beta = action_smoothing_beta
+        self.progress_model = progress_model
 
 
 def load_qos(params):

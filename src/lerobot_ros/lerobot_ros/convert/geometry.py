@@ -11,7 +11,6 @@ import geometry_msgs.msg as geometry_msgs
 
 from .base import generate_topic_classes_from_layouts
 
-
 # Field layouts for geometry messages
 # Each entry: message_class -> list of field paths
 # field_path can be nested like "linear.x" or "pose.position.x"

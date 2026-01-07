@@ -26,4 +26,8 @@ dev = [
 [tool.uv.sources]
 lerobot = { git = "https://github.com/huggingface/lerobot.git" }
 
-
+[tool.ty.environment]
+extra-paths = [
+    "/opt/ros/jazzy/lib/python3.12/site-packages/",
+    "install/lerobot_interfaces/lib/python3.12/site-packages/"
+]

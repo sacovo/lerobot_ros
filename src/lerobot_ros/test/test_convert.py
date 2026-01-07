@@ -9,56 +9,54 @@ Tests both directions:
 import pytest
 import torch
 
+# geometry_msgs
+from geometry_msgs.msg import (
+    Accel,
+    Point,
+    Point32,
+    Pose,
+    Pose2D,
+    PoseStamped,
+    Quaternion,
+    Transform,
+    Twist,
+    TwistStamped,
+    Vector3,
+    Wrench,
+)
+from rclpy.qos import QoSProfile
+
+# sensor_msgs
+from sensor_msgs.msg import (
+    FluidPressure,
+    Illuminance,
+    Imu,
+    MagneticField,
+    NavSatStatus,
+    Range,
+    RelativeHumidity,
+    Temperature,
+)
+
 # std_msgs
 from std_msgs.msg import (
     Bool,
+    Float32,
+    Float32MultiArray,
+    Float64,
+    Float64MultiArray,
     Int8,
     Int16,
     Int32,
+    Int32MultiArray,
     Int64,
     UInt8,
     UInt16,
     UInt32,
     UInt64,
-    Float32,
-    Float64,
-    Float32MultiArray,
-    Float64MultiArray,
-    Int32MultiArray,
 )
 
-# geometry_msgs
-from geometry_msgs.msg import (
-    Point,
-    Point32,
-    Vector3,
-    Quaternion,
-    Pose,
-    Pose2D,
-    Transform,
-    Twist,
-    Accel,
-    Wrench,
-    PoseStamped,
-    TwistStamped,
-)
-
-# sensor_msgs
-from sensor_msgs.msg import (
-    Imu,
-    Temperature,
-    RelativeHumidity,
-    FluidPressure,
-    Illuminance,
-    Range,
-    MagneticField,
-    NavSatStatus,
-)
-
-from rclpy.qos import QoSProfile
-
-from lerobot_ros.convert import std, geometry, sensor
-
+from lerobot_ros.convert import geometry, sensor, std
 
 # Default QoS for testing
 DEFAULT_QOS = QoSProfile(depth=10)
@@ -760,8 +758,8 @@ class TestImageConversion:
 
     def _create_ros_image(self, width, height, encoding="rgb8", fill_value=None):
         """Helper to create a ROS Image message with test data."""
-        from sensor_msgs.msg import Image
         import numpy as np
+        from sensor_msgs.msg import Image
 
         msg = Image()
         msg.width = width
@@ -826,10 +824,11 @@ class TestImageConversion:
 
     def _create_compressed_image(self, width, height, format="jpeg"):
         """Helper to create a ROS CompressedImage message."""
-        from sensor_msgs.msg import CompressedImage
-        from PIL import Image as PILImage
         from io import BytesIO
+
         import numpy as np
+        from PIL import Image as PILImage
+        from sensor_msgs.msg import CompressedImage
 
         # Create a test image
         data = np.zeros((height, width, 3), dtype=np.uint8)
@@ -1027,8 +1026,9 @@ class TestImageConversion:
 
     def test_compressed_image_to_tensor_png(self):
         """Test ImageCompressedTopic converts PNG compressed image to tensor."""
-        from lerobot_ros.convert import image
         import numpy as np
+
+        from lerobot_ros.convert import image
 
         width, height = 32, 32
 
@@ -1127,9 +1127,10 @@ class TestImageConversion:
 
     def test_image_with_row_padding(self):
         """Test ImageTopic handles images with row padding (step > width * bytes_per_pixel)."""
-        from sensor_msgs.msg import Image
-        from lerobot_ros.convert import image
         import numpy as np
+        from sensor_msgs.msg import Image
+
+        from lerobot_ros.convert import image
 
         width, height = 63, 48  # Odd width to likely cause padding
         channels = 3
