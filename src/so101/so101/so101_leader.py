@@ -63,7 +63,7 @@ class ROSSO101Leader:
         )
 
         self.auto_sub = self.node.create_subscription(
-            String, "/autonomy_mode", self.autonomy_mode_callback, 10
+            String, "autonomy_mode", self.autonomy_mode_callback, 10
         )
 
         self.activate_service = self.node.create_service(
@@ -72,7 +72,7 @@ class ROSSO101Leader:
             self.activate,
         )
         self.joint_state_publisher = self.node.create_publisher(
-            JointState, "/so101_leader/joint_states", 10
+            JointState, "so101_leader/joint_states", 10
         )
         self.auto_mode = "manual"
 

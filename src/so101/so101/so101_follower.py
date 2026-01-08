@@ -67,13 +67,13 @@ class ROSSO101Follower:
 
         self.joint_state_subscription = self.node.create_subscription(
             JointState,
-            "/so101_leader/joint_states",
+            "so101_leader/joint_states",
             self.joint_state_callback,
             10,
         )
         self.joint_state_publisher = self.node.create_publisher(
             JointState,
-            "/so101_follower/joint_states",
+            "~/joint_states",
             10,
         )
         freq = (

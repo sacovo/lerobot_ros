@@ -80,7 +80,7 @@ class PolicyController:
         ] = {}
 
         self.task_subscrber = node.create_subscription(
-            String, "/task", self.task_callback, 10
+            String, "task", self.task_callback, 10
         )
         self.task_completion_threshold = (
             node.declare_parameter("task_completion_threshold", 0.9)
@@ -90,11 +90,11 @@ class PolicyController:
 
         self.policy_done_pub = self.node.create_publisher(
             Empty,
-            "/policy_control/done",
+            "policy_control/done",
             10,
         )
         self.progress_subscriber = node.create_subscription(
-            TaskProgress, "/episode_progress", self.progress_callback, 10
+            TaskProgress, "episode_progress", self.progress_callback, 10
         )
 
         # Action and observation queue
@@ -111,18 +111,16 @@ class PolicyController:
         )
         self.task = None
 
-        self.node.create_service(ListPolicies, "/list_policies", self.list_policies)
+        self.node.create_service(ListPolicies, "list_policies", self.list_policies)
+        self.node.create_service(SetBool, "set_policy_running", self.set_policy_running)
         self.node.create_service(
-            SetBool, "/set_policy_running", self.set_policy_running
+            Calibrate, "calibrate", self.trigger_calibration_service
         )
         self.node.create_service(
-            Calibrate, "/calibrate", self.trigger_calibration_service
+            Trigger, "toggle_policy_running", self.toggle_policy_running_service
         )
         self.node.create_service(
-            Trigger, "/toggle_policy_running", self.toggle_policy_running_service
-        )
-        self.node.create_service(
-            SetActivePolicy, "/set_active_policy", self.set_policy_service
+            SetActivePolicy, "set_active_policy", self.set_policy_service
         )
 
         self.load_policies(config.policies)

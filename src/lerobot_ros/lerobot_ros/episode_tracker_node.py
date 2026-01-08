@@ -42,7 +42,7 @@ class EpisodeTrackerNode:
 
         self.active_policy_sub = node.create_subscription(
             String,
-            "/active_policy",
+            "active_policy",
             self.active_policy_callback,
             10,
         )
@@ -52,7 +52,7 @@ class EpisodeTrackerNode:
         self.convertor.running = True
 
         self.episode_progress_publisher = node.create_publisher(
-            TaskProgress, "/episode_progress", 10
+            TaskProgress, "episode_progress", 10
         )
         self.last_progress = None
 

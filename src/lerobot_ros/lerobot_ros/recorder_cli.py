@@ -123,7 +123,7 @@ class RecorderCLI:
         try:
             request = NewDataset.Request()
             request.repo_id = repo_id
-            result = call_service(self.node, "/new_dataset", request, NewDataset)
+            result = call_service(self.node, "new_dataset", request, NewDataset)
             result = cast(NewDataset.Response, result)
 
             if result.success:
@@ -149,7 +149,7 @@ class RecorderCLI:
         try:
             request = StartEpisode.Request()
             request.task = task
-            result = call_service(self.node, "/start_episode", request, StartEpisode)
+            result = call_service(self.node, "start_episode", request, StartEpisode)
             result = cast(StartEpisode.Response, result)
 
             self.episode_running = True
@@ -168,7 +168,7 @@ class RecorderCLI:
         try:
             request = EndEpisode.Request()
             request.discard = discard
-            result = call_service(self.node, "/end_episode", request, EndEpisode)
+            result = call_service(self.node, "end_episode", request, EndEpisode)
             result = cast(EndEpisode.Response, result)
 
             episode_frames = result.frames
@@ -190,7 +190,7 @@ class RecorderCLI:
         try:
             print("\nStoring episodes...")
             request = Trigger.Request()
-            result = call_service(self.node, "/store_episodes", request, Trigger)
+            result = call_service(self.node, "store_episodes", request, Trigger)
             print(f"✓ Stored episodes: {result.success}")
         except Exception as e:
             print(f"✗ Failed to store episodes: {e}")
