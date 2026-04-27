@@ -15,10 +15,12 @@ def clean_topic_name(topic_name: str) -> str:
 class BaseTopic:
     MAPPINGS = {}
 
-    def __init__(self, topic_name, qos, is_action=False):
-        self.is_action = is_action
+    def __init__(self, topic_name, qos, tag="observation", key=None):
+        self.is_action = tag == "action"
+        self.is_meta = tag == "meta"
         self.topic_name = clean_topic_name(topic_name)
         self.qos = qos
+        self.key = key if key is not None else self.topic_name
 
     def __init_subclass__(cls):
         """Register the subclass in the mappings."""

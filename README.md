@@ -27,6 +27,7 @@ source .venv/bin/activate
 uv pip install "./lerobot_ros[so101]" # or just ./lerobot_ros if you do not want to use the so101
 
 # Build ros package
+source /opt/ros/jazzy/setup.bash
 colcon build
 
 source install/setup.bash
@@ -34,7 +35,7 @@ source install/setup.bash
 # Use the file as starting point and customize as you see fit
 ros2 launch so101 so101.py config:=lerobot_ros/config/so101/params.yml
 
-ros2 run lerobot_ros recorder --ros-args -p config:=config/your_setup.toml
+ros2 run lerobot_ros dataset_recorder --ros-args -p config:=config/your_setup.toml
 
 ```
 

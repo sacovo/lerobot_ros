@@ -41,6 +41,7 @@ class PolicyConfig:
         self.action_queue_size = action_queue_size
         self.action_smoothing_beta = action_smoothing_beta
         self.progress_model = progress_model
+        self.value01 = "Hallo"
 
 
 def load_qos(params):

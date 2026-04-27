@@ -225,6 +225,12 @@ class Recorder:
                 continue
             self.node.get_logger().info(f"Stored episode with {len(episode)} frames.")
             del episode
+
+    def finalize(self):
+        if self.dataset is None:
+            return
+
+        self.node.get_logger().info("Finalized dataset")
         self.dataset.finalize()
 
     def new_dataset(self, dataset_name: str):
@@ -290,6 +296,7 @@ def main():
     except KeyboardInterrupt:
         node.get_logger().info("Shutting down recorder...")
         recorder.store_episodes()
+        recorder.finalize()
         node.get_logger().info("Recorder shutdown complete.")
     except Exception as e:
         node.get_logger().error(f"Error occurred: {e}")

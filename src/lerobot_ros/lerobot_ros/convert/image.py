@@ -142,9 +142,8 @@ def ros_image_to_numpy(ros_image):
 
 
 class ImageTopic(BaseTopic):
-    def __init__(self, height, width, channels, rotate=0, key="main", **kwargs):
+    def __init__(self, height, width, channels, rotate=0,  **kwargs):
         super().__init__(**kwargs)
-        self.key = key
         self.height = height
         self.width = width
         self.channels = channels
