@@ -69,5 +69,3 @@ __all__ = [
     "sensor",
     "image",
 ]
-
-print(sorted(BaseTopic.MAPPINGS.keys()))  # Debug: print registered topic classes

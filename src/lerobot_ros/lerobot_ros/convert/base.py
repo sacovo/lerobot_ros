@@ -24,7 +24,6 @@ class BaseTopic:
 
     def __init_subclass__(cls):
         """Register the subclass in the mappings."""
-        print(f"Registering topic class: {cls.__name__}")
         super().__init_subclass__()
         if cls not in BaseTopic.MAPPINGS:
             BaseTopic.MAPPINGS[cls.msg_type().__name__] = cls
