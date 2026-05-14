@@ -307,10 +307,13 @@ class Ros2Feature:
             if len(tensors) == 0:
                 tensor = torch.zeros(
                     topic.feature_description().get("shape", (1,)),
-                    dtype=torch.uint8 if topic.msg_type() == Image else getattr(torch, topic.feature_description().get("dtype", "float32")),
-                )
-                self.node.get_logger().info(
-                    f"Topic {topic_name} has no data, using zero tensor: {tensor.shape}, dtype={tensor.dtype}"
+                    dtype=(
+                        torch.uint8
+                        if topic.msg_type() == Image
+                        else getattr(
+                            torch, topic.feature_description().get("dtype", "float32")
+                        )
+                    ),
                 )
             else:
                 tensor = tensors[-1]
