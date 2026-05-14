@@ -3,8 +3,9 @@ requires = ["maturin>=1.11,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "rust_py_timer"
+name = "rust-py-timer"
 requires-python = ">=3.8"
+readme = "README.md"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",

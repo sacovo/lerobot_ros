@@ -1,5 +1,5 @@
 [package]
-name = "rust_py_timer"
+name = "rust-py-timer"
 version = "0.1.0"
 edition = "2021"
 
