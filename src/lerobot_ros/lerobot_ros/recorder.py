@@ -151,9 +151,14 @@ class Recorder:
             return 0
         self.recording = False
 
+        out_frames = []
         with self.out_frames_lock:
             out_frames = self.out_frames
             self.out_frames = None
+
+        if out_frames is None:
+            self.node.get_logger().warn("No frames were recorded for this episode.")
+            return 0
 
         l = len(out_frames)
         if not discard:
