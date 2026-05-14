@@ -1,4 +1,5 @@
 string repo_id
+bool resume
 ---
 bool success
 string msg

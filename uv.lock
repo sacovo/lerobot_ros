@@ -813,6 +813,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "lerobot" },
     { name = "pytest" },
+    { name = "rerun" },
     { name = "rust-py-timer" },
 ]
 
@@ -831,10 +832,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lerobot", git = "https://github.com/huggingface/lerobot.git" },
+    { name = "lerobot", extras = ["dataset"], git = "https://github.com/huggingface/lerobot.git" },
     { name = "lerobot", extras = ["feetech"], marker = "extra == 'so101'", git = "https://github.com/huggingface/lerobot.git" },
     { name = "lerobot", extras = ["smolvla"], marker = "extra == 'smolvla'", git = "https://github.com/huggingface/lerobot.git" },
     { name = "pytest", specifier = ">=9.0.2" },
+    { name = "rerun", specifier = ">=1.0.31" },
     { name = "rust-py-timer", specifier = ">=0.1.0" },
 ]
 provides-extras = ["so101", "smolvla"]
@@ -2021,6 +2023,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c9/74/b3ff8e6c8446842c3f5c837e9c3dfcfe2018ea6ecef224c710c85ef728f4/requests-2.32.5.tar.gz", hash = "sha256:dbba0bac56e100853db0ea71b82b4dfd5fe2bf6d3754a8893c3af500cec7d7cf", size = 134517, upload-time = "2025-08-18T20:46:02.573Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/db/4254e3eabe8020b458f1a747140d32277ec7a271daf1d235b70dc0b4e6e3/requests-2.32.5-py3-none-any.whl", hash = "sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6", size = 64738, upload-time = "2025-08-18T20:46:00.542Z" },
+]
+
+[[package]]
+name = "rerun"
+version = "1.0.31"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/29/f5/47be05b268a8d1698d052ee0dcffb348014951c0de428621756b08496ae5/rerun-1.0.31.tar.gz", hash = "sha256:ebf841dd2cce5131ec3482243a2df13db76a0ebf65406c59d561a66d8a14a36d", size = 10222, upload-time = "2026-02-17T01:10:05.974Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/dc/72b1cbce58c1ec94be39b7ffd9f68af14154c39aa47112d143b2b28cc0ee/rerun-1.0.31-py3-none-any.whl", hash = "sha256:d2aa55924277bf66ac883508d70509b592299289f51f5d3deb5b95d778d28e26", size = 10178, upload-time = "2026-02-17T01:10:04.596Z" },
 ]
 
 [[package]]

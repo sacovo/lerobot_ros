@@ -1,0 +1,5 @@
+fps = 10
+dataset_root = "/tmp/lerobot_test_datasets"
+
+[topics]
+"/test/float" = { msg_type = "Float32", qos = { durability = "volatile" } }

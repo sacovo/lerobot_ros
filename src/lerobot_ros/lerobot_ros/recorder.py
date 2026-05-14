@@ -6,9 +6,8 @@ from typing import Optional
 
 import rclpy
 import rclpy.executors
-import rclpy.logging
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.utils import DEFAULT_FEATURES
+from lerobot.datasets.feature_utils import DEFAULT_FEATURES
 from lerobot_interfaces.srv import EndEpisode, NewDataset, StartEpisode
 from rclpy.node import Node
 from std_msgs.msg import Int32
@@ -49,6 +48,8 @@ class Recorder:
         )
         self.node.create_service(EndEpisode, "end_episode", self.end_episode_service)
         self.node.create_service(Trigger, "store_episodes", self.store_episodes_service)
+        self.node.create_service(Trigger, "finalize_dataset", self.finalize_srv)
+        self.node.create_service(Trigger, "push_to_hub", self.push_to_hub)
 
         self.frame_publisher = node.create_publisher(Int32, "frame", 10)
         self.episode_publisher = node.create_publisher(Int32, "episode", 10)
@@ -60,10 +61,10 @@ class Recorder:
             rerun_remote=config.rerrun_remote,
             visualize=self.visualize,
         )
+        self.last_t = 0.0
         self.convertor.register_frame_callback(self._timer_callback)
         self.convertor.setup_subscribers()
         self.convertor.running = True
-        self.last_t = 0.0
 
         self._background_threads = []
 
@@ -101,7 +102,7 @@ class Recorder:
     ):
         name = request.repo_id
         try:
-            self.new_dataset(name)
+            self.new_dataset(name, request.resume)
             response.success = True
             self.node.get_logger().info(f"Created new dataset: {name}")
         except Exception as e:
@@ -226,22 +227,67 @@ class Recorder:
             self.node.get_logger().info(f"Stored episode with {len(episode)} frames.")
             del episode
 
+    def finalize_srv(self, request: Trigger.Request, response: Trigger.Response):
+        ds = self.finalize()
+        if ds is None:
+            response.message = "No dataset to finalize."
+            response.success = False
+        else:
+            response.message = "Dataset finalized successfully."
+            response.success = True
+        return response
+
     def finalize(self):
         if self.dataset is None:
             return
 
         self.node.get_logger().info("Finalized dataset")
         self.dataset.finalize()
+        ds = self.dataset
+        self.dataset = None
+        return ds
 
-    def new_dataset(self, dataset_name: str):
+    def push_to_hub(self, request: Trigger.Request, response: Trigger.Response):
+
+        ds = self.finalize()
+        if ds is None:
+            self.node.get_logger().warn("No dataset, skipping push")
+            response.message = "No dataset, skipping push"
+            response.success = False
+            return response
+
+        try:
+            ds.push_to_hub()
+        except Exception as ex:
+            self.node.get_logger().error(f"Error while pushing: {ex}")
+            response.message = f"Error while pushing: {ex}"
+            response.success = False
+            return response
+
+        response.success = True
+
+        return response
+
+    def new_dataset(self, dataset_name: str, resume: bool):
         """
         Create a new dataset with the given name.
         """
         path = os.path.join(self.dataset_root, dataset_name)
 
         if self.dataset and self.dataset.root == path:
-            self.node.get_logger(f"Dataset {dataset_name} is already loaded, skipping")
+            self.node.get_logger().error(
+                f"Dataset {dataset_name} is already loaded, skipping"
+            )
             return False
+
+        if resume:
+            ds = LeRobotDataset.resume(
+                repo_id=dataset_name,
+                root=path,
+                tolerance_s=self.tolerance_s,
+            )
+            self.dataset = ds
+            return
 
         if os.path.exists(path):
             dataset = LeRobotDataset(

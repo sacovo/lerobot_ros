@@ -7,6 +7,7 @@ readme = "README.md"
 dependencies = [
     "lerobot>=0.4.2",
     "pytest>=9.0.2",
+    "rerun>=1.0.31",
     "rust-py-timer>=0.1.0",
 ]
 
