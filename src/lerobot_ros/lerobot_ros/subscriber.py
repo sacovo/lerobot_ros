@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import rerun as rr
 import torch
+from lerobot_ros.convert.image import ImageCompressedTopic
 from rclpy.node import Node
-from sensor_msgs.msg import Image
 
 try:
     from rust_py_timer import FrameCollector
@@ -305,15 +305,13 @@ class Ros2Feature:
             topic = self.topics[topic_name]
             key = key_for_topic(topic)
             if len(tensors) == 0:
+                dtype = topic.feature_description().get("dtype", "float32")
+                if dtype == "video" or dtype == "image":
+                    dtype = "uint8"
+
                 tensor = torch.zeros(
                     topic.feature_description().get("shape", (1,)),
-                    dtype=(
-                        torch.uint8
-                        if topic.msg_type() == Image
-                        else getattr(
-                            torch, topic.feature_description().get("dtype", "float32")
-                        )
-                    ),
+                    dtype=(getattr(torch, dtype)),
                 )
             else:
                 tensor = tensors[-1]
@@ -358,7 +356,7 @@ class Ros2Feature:
         }
         for topic in self.topics.values():
             key = key_for_topic(topic)
-            if isinstance(topic, ImageTopic):
+            if isinstance(topic, ImageTopic) or isinstance(topic, ImageCompressedTopic):
                 feature_description[key] = {
                     "dtype": "video",
                     "shape": (topic.height, topic.width, topic.channels),
