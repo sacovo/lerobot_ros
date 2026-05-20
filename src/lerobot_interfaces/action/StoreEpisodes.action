@@ -1,0 +1,9 @@
+# Goal
+---
+# Result
+bool success
+string message
+---
+# Feedback
+int32 episodes_stored
+int32 total_episodes

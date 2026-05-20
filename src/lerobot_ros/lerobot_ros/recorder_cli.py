@@ -6,7 +6,9 @@ import tty
 from typing import cast
 
 import rclpy
-from lerobot_interfaces.srv import EndEpisode, NewDataset, StartEpisode
+from rclpy.action import ActionClient
+from lerobot_interfaces.srv import EndEpisode, NewDataset, StartEpisode, FinalizeDataset, PushToHub
+from lerobot_interfaces.action import StoreEpisodes
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
@@ -107,6 +109,8 @@ class RecorderCLI:
                 print(f"  [{i}] {task.replace('_', ' ').title()}")
             print("\nOther Options:")
             print("  [S] Store episodes")
+            print("  [F] Finalize dataset")
+            print("  [P] Push to hub")
 
         print("  [Q] Quit")
         print("\nPress a key...")
@@ -189,11 +193,73 @@ class RecorderCLI:
     def store_episodes(self):
         try:
             print("\nStoring episodes...")
-            request = Trigger.Request()
-            result = call_service(self.node, "store_episodes", request, Trigger)
-            print(f"✓ Stored episodes: {result.success}")
+            client = ActionClient(self.node, StoreEpisodes, "store_episodes_action")
+            
+            if not client.wait_for_server(timeout_sec=5.0):
+                print("✗ Error: StoreEpisodes action server not available")
+                return
+
+            goal_msg = StoreEpisodes.Goal()
+            
+            self._action_done = False
+            
+            def feedback_callback(feedback_msg):
+                feedback = feedback_msg.feedback
+                print(f"\rProgress: {feedback.episodes_stored}/{feedback.total_episodes} episodes stored", end="", flush=True)
+
+            send_goal_future = client.send_goal_async(goal_msg, feedback_callback=feedback_callback)
+            
+            while not send_goal_future.done():
+                rclpy.spin_once(self.node, timeout_sec=0.1)
+                
+            goal_handle = send_goal_future.result()
+            if not goal_handle.accepted:
+                print("\n✗ Goal rejected")
+                return
+
+            get_result_future = goal_handle.get_result_async()
+            while not get_result_future.done():
+                rclpy.spin_once(self.node, timeout_sec=0.1)
+                
+            result = get_result_future.result().result
+            if result.success:
+                print(f"\n✓ {result.message}")
+            else:
+                print(f"\n✗ Error: {result.message}")
+                
         except Exception as e:
-            print(f"✗ Failed to store episodes: {e}")
+            print(f"\n✗ Failed to store episodes: {e}")
+            traceback.print_exc()
+            input("Press Enter to continue...")
+
+    def finalize_dataset(self):
+        try:
+            print("\nFinalizing dataset...")
+            request = FinalizeDataset.Request()
+            result = call_service(self.node, "finalize_dataset", request, FinalizeDataset)
+            result = cast(FinalizeDataset.Response, result)
+            if result.success:
+                print(f"✓ {result.message}")
+            else:
+                print(f"✗ {result.message}")
+            input("Press Enter to continue...")
+        except Exception as e:
+            print(f"✗ Failed to finalize dataset: {e}")
+            input("Press Enter to continue...")
+
+    def push_to_hub(self):
+        try:
+            print("\nPushing to hub...")
+            request = PushToHub.Request()
+            result = call_service(self.node, "push_to_hub", request, PushToHub)
+            result = cast(PushToHub.Response, result)
+            if result.success:
+                print("✓ Successfully pushed to hub!")
+            else:
+                print(f"✗ Error: {result.message}")
+            input("Press Enter to continue...")
+        except Exception as e:
+            print(f"✗ Failed to push to hub: {e}")
             input("Press Enter to continue...")
 
     def run(self):
@@ -226,6 +292,10 @@ class RecorderCLI:
                             self.start_episode(task_num)
                     elif key == "s":
                         self.store_episodes()
+                    elif key == "f":
+                        self.finalize_dataset()
+                    elif key == "p":
+                        self.push_to_hub()
 
                 else:
                     # Episode control mode

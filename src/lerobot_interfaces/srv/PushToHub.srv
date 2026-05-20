@@ -1,0 +1,4 @@
+string api_key
+---
+bool success
+string message

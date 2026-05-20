@@ -8,8 +8,17 @@ import rclpy
 import rclpy.executors
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.feature_utils import DEFAULT_FEATURES
-from lerobot_interfaces.srv import EndEpisode, NewDataset, StartEpisode
+from lerobot_interfaces.srv import (
+    EndEpisode,
+    NewDataset,
+    StartEpisode,
+    FinalizeDataset,
+    PushToHub,
+)
+from lerobot_interfaces.action import StoreEpisodes
+from rclpy.action import ActionServer
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import Int32
 from std_srvs.srv import Trigger
 from tqdm import tqdm
@@ -42,14 +51,24 @@ class Recorder:
         self.fps = config.fps
         self.tolerance_s = config.tolerance_s
 
+        self.callback_group = ReentrantCallbackGroup()
+
         self.node.create_service(NewDataset, "new_dataset", self.new_dataset_service)
         self.node.create_service(
             StartEpisode, "start_episode", self.start_episode_service
         )
         self.node.create_service(EndEpisode, "end_episode", self.end_episode_service)
         self.node.create_service(Trigger, "store_episodes", self.store_episodes_service)
-        self.node.create_service(Trigger, "finalize_dataset", self.finalize_srv)
-        self.node.create_service(Trigger, "push_to_hub", self.push_to_hub)
+        self.node.create_service(FinalizeDataset, "finalize_dataset", self.finalize_srv)
+        self.node.create_service(PushToHub, "push_to_hub", self.push_to_hub)
+
+        self._store_action_server = ActionServer(
+            self.node,
+            StoreEpisodes,
+            "store_episodes_action",
+            self.execute_store_episodes,
+            callback_group=self.callback_group,
+        )
 
         self.frame_publisher = node.create_publisher(Int32, "frame", 10)
         self.episode_publisher = node.create_publisher(Int32, "episode", 10)
@@ -83,7 +102,7 @@ class Recorder:
             delta = t - self.last_t
             error = 1.0 / self.fps - delta
             if abs(error) > 1e-5:
-                self.node.get_logger().warning(
+                self.node.get_logger().info(
                     f"Received frame at time {t - self.last_t:.6f}s"
                 )
         self.last_t = t
@@ -177,11 +196,73 @@ class Recorder:
         try:
             self.store_episodes()
             response.success = True
-            response.message = "Episodes stored successfully."
+            response.message = "Episodes storage started in background."
         except Exception as e:
             response.message = str(e)
             response.success = False
         return response
+
+    async def execute_store_episodes(self, goal_handle):
+        self.node.get_logger().info("Executing StoreEpisodes action...")
+
+        if self.dataset is None:
+            self.node.get_logger().info(
+                "No dataset initialized, skipping episode storage."
+            )
+            goal_handle.abort()
+            return StoreEpisodes.Result(
+                success=False, message="No dataset initialized."
+            )
+
+        with self.episodes_lock:
+            episodes = self.episodes
+            self.episodes = []
+
+        if not episodes:
+            goal_handle.succeed()
+            return StoreEpisodes.Result(success=True, message="No episodes to store.")
+
+        feedback_msg = StoreEpisodes.Feedback()
+        feedback_msg.total_episodes = len(episodes)
+        feedback_msg.episodes_stored = 0
+
+        total = len(episodes)
+        while len(episodes) > 0:
+            episode = episodes.pop(0)
+            self.node.get_logger().info(f"Storing episode with {len(episode)} frames.")
+
+            frame0 = episode[0]
+            t0 = frame0[2]
+            for i, frame in enumerate(tqdm(episode, desc="Frame")):
+                try:
+                    frame, task, t = frame
+                    frame["task"] = task
+                    self.node.get_logger().debug(
+                        f"Storing frame {i} at time {t - t0:.5f}s"
+                    )
+
+                    self.dataset.add_frame(frame)
+                except Exception as e:
+                    self.node.get_logger().error(f"Failed to add frame: {e}")
+                    continue
+            try:
+                self.dataset.save_episode()
+            except ValueError as e:
+                self.node.get_logger().error(f"Failed to save episode: {e}")
+                traceback.print_exc()
+                continue
+
+            feedback_msg.episodes_stored += 1
+            goal_handle.publish_feedback(feedback_msg)
+            self.node.get_logger().info(
+                f"Stored episode {feedback_msg.episodes_stored}/{total}"
+            )
+            del episode
+
+        goal_handle.succeed()
+        return StoreEpisodes.Result(
+            success=True, message=f"Successfully stored {total} episodes."
+        )
 
     def store_episodes(self):
         if self.dataset is None:
@@ -232,7 +313,9 @@ class Recorder:
             self.node.get_logger().info(f"Stored episode with {len(episode)} frames.")
             del episode
 
-    def finalize_srv(self, request: Trigger.Request, response: Trigger.Response):
+    def finalize_srv(
+        self, request: FinalizeDataset.Request, response: FinalizeDataset.Response
+    ):
         ds = self.finalize()
         if ds is None:
             response.message = "No dataset to finalize."
@@ -252,7 +335,7 @@ class Recorder:
         self.dataset = None
         return ds
 
-    def push_to_hub(self, request: Trigger.Request, response: Trigger.Response):
+    def push_to_hub(self, request: PushToHub.Request, response: PushToHub.Response):
 
         ds = self.finalize()
         if ds is None:
@@ -262,6 +345,9 @@ class Recorder:
             return response
 
         try:
+            if request.api_key:
+                self.node.get_logger().info("Setting Hugging Face API key from request")
+                os.environ["HF_API_KEY"] = request.api_key
             ds.push_to_hub()
         except Exception as ex:
             self.node.get_logger().error(f"Error while pushing: {ex}")
@@ -319,7 +405,7 @@ class Recorder:
 
 def main():
     rclpy.init(args=sys.argv)
-    executor = rclpy.executors.SingleThreadedExecutor()
+    executor = rclpy.executors.MultiThreadedExecutor()
     node = Node("recorder_node")
     subscriber_node = Node("subscriber_node")
 
