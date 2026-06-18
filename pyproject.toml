@@ -5,7 +5,7 @@ description = "Add your description here"
 license = "MIT"
 readme = "README.md"
 dependencies = [
-    "lerobot>=0.4.2",
+    "lerobot==0.5.1",
     "pytest>=9.0.2",
     "rerun>=1.0.31",
     "rust-py-timer>=0.1.0",
@@ -24,8 +24,6 @@ dev = [
     "maturin>=1.11.2",
 ]
 
-[tool.uv.sources]
-lerobot = { git = "https://github.com/huggingface/lerobot.git" }
 
 [tool.ty.environment]
 extra-paths = [

@@ -113,32 +113,27 @@ def ros_image_to_numpy(ros_image):
         data = bytes(data)
 
     if encoding == "rgb8":
-        # RGB 8-bit - already in correct format
+        # RGB 8-bit
         img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
-        rgb_array = img_array[:, : width * 3].reshape((height, width, 3))
-        pil_image = PILImage.fromarray(rgb_array, "RGB")
+        return img_array[:, : width * 3].reshape((height, width, 3))
 
     elif encoding == "bgr8":
-        # BGR 8-bit - convert to RGB
+        # BGR 8-bit
         img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
         bgr_array = img_array[:, : width * 3].reshape((height, width, 3))
-        rgb_array = bgr_array[:, :, ::-1]  # BGR to RGB
-        pil_image = PILImage.fromarray(rgb_array, "RGB")
+        return cv2.cvtColor(bgr_array, cv2.COLOR_BGR2RGB)
 
     elif encoding == "mono8":
         # Grayscale - convert to RGB by repeating channels
         img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
         gray_array = img_array[:, :width].reshape((height, width))
-        rgb_array = np.stack([gray_array, gray_array, gray_array], axis=2)
-
-        pil_image = PILImage.fromarray(rgb_array, "RGB")
+        return cv2.cvtColor(gray_array, cv2.COLOR_GRAY2RGB)
     else:
         # For other encodings, use the PIL conversion then convert to array
         pil_image = ros_image_to_pil(ros_image)
         if pil_image.mode != "RGB":
             pil_image = pil_image.convert("RGB")
-
-    return pil_image
+        return np.array(pil_image)
 
 
 class ImageTopic(BaseTopic):
@@ -165,18 +160,26 @@ class ImageTopic(BaseTopic):
 
     def to_tensor(self, msg: Image) -> torch.Tensor:
         """Convert a ROS Image message to a PyTorch tensor."""
-        pil_image = ros_image_to_numpy(msg)
+        img = ros_image_to_numpy(msg)
 
         if self.rotate:
-            pil_image = pil_image.rotate(self.rotate, expand=True)
-        if pil_image.size != (self.width, self.height):
-            img = np.array(pil_image)
+            rot = self.rotate % 360
+            if rot == 90:
+                img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+            elif rot == 180:
+                img = cv2.rotate(img, cv2.ROTATE_180)
+            elif rot == 270:
+                img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            else:
+                pil_image = PILImage.fromarray(img)
+                pil_image = pil_image.rotate(self.rotate, expand=True)
+                img = np.array(pil_image)
+
+        if img.shape[1] != self.width or img.shape[0] != self.height:
             img = cv2.resize(
                 img, (self.width, self.height), interpolation=cv2.INTER_NEAREST
             )
-        else:
-            img = np.array(pil_image)
-        # Resize if necessary
+
         return torch.tensor(
             img,
             dtype=torch.uint8,
@@ -201,19 +204,35 @@ class ImageCompressedTopic(ImageTopic):
 
     def to_tensor(self, msg: CompressedImage) -> torch.Tensor:
         """Convert a ROS compressed Image message to a PyTorch tensor."""
-        # Load image from compressed data using PIL
-        pil_image = PILImage.open(BytesIO(msg.data))
-        # Resize if not matching expected size
+        data = msg.data
+        if isinstance(data, (list, tuple)):
+            data = bytes(data)
+
+        np_arr = np.frombuffer(data, dtype=np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Failed to decode compressed image")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         if self.rotate:
-            pil_image = pil_image.rotate(self.rotate, expand=True)
+            rot = self.rotate % 360
+            if rot == 90:
+                img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+            elif rot == 180:
+                img = cv2.rotate(img, cv2.ROTATE_180)
+            elif rot == 270:
+                img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            else:
+                pil_image = PILImage.fromarray(img)
+                pil_image = pil_image.rotate(self.rotate, expand=True)
+                img = np.array(pil_image)
 
-        if pil_image.size != (self.width, self.height):
-            pil_image = pil_image.resize((self.width, self.height))
+        if img.shape[1] != self.width or img.shape[0] != self.height:
+            img = cv2.resize(
+                img, (self.width, self.height), interpolation=cv2.INTER_NEAREST
+            )
 
-        # Convert to numpy array
-        img_array = np.asarray(pil_image)
-        return torch.tensor(img_array, dtype=torch.uint8)
+        return torch.tensor(img, dtype=torch.uint8)
 
     def from_tensor(self, tensor: torch.Tensor) -> CompressedImage:
         """Convert a PyTorch tensor to a ROS compressed Image message."""

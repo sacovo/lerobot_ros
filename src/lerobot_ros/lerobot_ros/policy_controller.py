@@ -264,6 +264,14 @@ class PolicyController:
         preprocessor.reset()
         postprocessor.reset()
 
+        # Move policy and pre/postprocessors to device if they support it
+        if hasattr(policy, "to"):
+            policy = policy.to(config.device)
+        if hasattr(preprocessor, "to"):
+            preprocessor = preprocessor.to(config.device)
+        if hasattr(postprocessor, "to"):
+            postprocessor = postprocessor.to(config.device)
+
         self.policies[task] = (preprocessor, policy, postprocessor)
 
     def frame_callback(self, observation, t):
@@ -271,8 +279,8 @@ class PolicyController:
             return
 
         with torch.inference_mode():
-            prepare_frame(observation, "cpu")
-
+            # Add metadata on the callback thread, but do NOT call prepare_frame here
+            # to avoid blocking the subscriber thread with tensor processing/device transfers.
             observation["task"] = self.task or ""
             observation["robot_type"] = self.config.robot_type
 
@@ -294,8 +302,13 @@ class PolicyController:
             if not policy or not config:
                 continue
 
+            # Batch and preprocess the observation on the target device
+            with torch.inference_mode():
+                observation = prepare_frame(observation, config.device)
+
             if self.calibration:
-                observation = pre(observation)
+                with torch.inference_mode():
+                    observation = pre(observation)
                 self.calibration_frames.put(observation)
                 continue
 
@@ -310,7 +323,10 @@ class PolicyController:
             with torch.inference_mode():
                 observation = pre(observation)
                 action_chunk = policy.predict_action_chunk(observation)
-                actions = action_chunk.transpose(0, 1)
+                # Postprocess the entire action chunk at once on the target device
+                action_chunk = post(action_chunk)
+                # Squeeze the batch dimension and move to CPU in a single step
+                actions = action_chunk.squeeze(0).to("cpu")
 
             t1 = time.time()
 
@@ -319,9 +335,6 @@ class PolicyController:
             self.action_queue.clear()
 
             for i, action in enumerate(actions[passed_actions:]):
-                action = post(action)
-                action = action.squeeze(0).to("cpu")
-
                 if len(old_actions) > 0:
                     old_action, _ = old_actions.popleft()
                     w = self.action_weights[passed_actions + i]
