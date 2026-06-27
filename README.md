@@ -47,6 +47,44 @@ An example is provided in `lerobot_ros/config/so101/so101.toml`.
 
 LeRobot works with rerun for visualization. You can configure the nodes to visualize data with rerun by providing the address of your instance. This gives you an easy interface to see what you are currently recording or what your policies currently see.
 
+### Topic Output Limits and Rounding
+
+Policies output continuous values, but some robotic controllers/actuators require distinct inputs (e.g. `1.0` or `-1.0` for a gripper) or have physical range limits. You can specify rounding and output clamping on a per-topic basis under the `[topics]` section using:
+- `limits`: Clamps output values between a minimum and maximum range (e.g., `[min, max]`). One-sided limits can be specified by setting either bound to `None`.
+- `round_values`: Snaps output values to the closest number in a given list of allowed values.
+
+These constraints can be configured in three ways:
+
+1. **Topic-wide (applies to all elements):**
+   ```toml
+   [topics."/test/gripper"]
+   msg_type = "Float32"
+   tag = "action"
+   limits = [-1.0, 1.0]
+   round_values = [-1.0, 1.0]
+   ```
+
+2. **Element-wise (by list index):**
+   ```toml
+   [topics."/test/joints"]
+   msg_type = "Float32MultiArray"
+   names = ["joint_a", "joint_b"]
+   tag = "action"
+   limits = [ [-1.0, 1.0], [-2.0, 2.0] ]
+   round_values = [ [-0.5, 0.5], [1.0, -1.0, 0.0] ]
+   ```
+
+3. **Named (by joint name or field part):**
+   ```toml
+   [topics."/follower/joint_states"]
+   msg_type = "JointState"
+   tag = "action"
+   joints = ["shoulder", "gripper"]
+   position = true
+   limits = { shoulder = [-1.57, 1.57], gripper = [-1.0, 1.0] }
+   round_values = { gripper = [-1.0, 1.0] }
+   ```
+
 ## Quick guide
 
 First you need to configure the topics you want to record. Usually these would be some images that a human needs to solve the task, as well as sensors and joint states of your motors. These are the input topics that should later be predicted by a policy.

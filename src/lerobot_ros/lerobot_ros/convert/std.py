@@ -56,9 +56,11 @@ def _make_scalar_topic(msg_cls, dtype: str, torch_dtype: torch.dtype):
             return torch.tensor([msg.data], dtype=self._torch_dtype)
 
         def from_tensor(self, tensor: torch.Tensor):
+            if tensor.shape == (1,):
+                tensor = tensor.squeeze(0)
             if tensor.shape != ():
                 raise ValueError(
-                    f"Tensor must be scalar for {msg_cls.__name__} conversion."
+                    f"Tensor must be scalar for {msg_cls.__name__} conversion. Got shape {tensor.shape}"
                 )
             msg = self._msg_cls()
             msg.data = tensor.item()

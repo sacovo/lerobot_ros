@@ -31,7 +31,13 @@ class TensorToRosConverter:
         msgs = {}
         for name, topic in self.topics.items():
             size = self.sizes[topic]
-            msg = topic.from_tensor(tensor[pos : pos + size])
+            sub_tensor = tensor[pos : pos + size]
+            if not isinstance(sub_tensor, torch.Tensor):
+                sub_tensor = torch.tensor(sub_tensor)
+            if getattr(topic, "round_to_nearest", False):
+                sub_tensor = torch.round(sub_tensor)
+            sub_tensor = topic.apply_limits_and_rounding(sub_tensor)
+            msg = topic.from_tensor(sub_tensor)
             msgs[name] = msg
             pos += size
 

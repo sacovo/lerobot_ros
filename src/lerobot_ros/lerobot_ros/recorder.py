@@ -7,7 +7,7 @@ from typing import Optional
 import rclpy
 import rclpy.executors
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.feature_utils import DEFAULT_FEATURES
+from lerobot_ros.core import DatasetWriter
 from lerobot_interfaces.srv import (
     EndEpisode,
     NewDataset,
@@ -38,6 +38,7 @@ class Recorder:
         self._recording = False
 
         self.dataset: Optional[LeRobotDataset] = None
+        self.writer: Optional[DatasetWriter] = None
 
         self.episodes_lock = threading.Lock()
         self.episodes = []
@@ -205,7 +206,7 @@ class Recorder:
     async def execute_store_episodes(self, goal_handle):
         self.node.get_logger().info("Executing StoreEpisodes action...")
 
-        if self.dataset is None:
+        if self.writer is None:
             self.node.get_logger().info(
                 "No dataset initialized, skipping episode storage."
             )
@@ -230,26 +231,11 @@ class Recorder:
         while len(episodes) > 0:
             episode = episodes.pop(0)
             self.node.get_logger().info(f"Storing episode with {len(episode)} frames.")
-
-            frame0 = episode[0]
-            t0 = frame0[2]
-            for i, frame in enumerate(tqdm(episode, desc="Frame")):
-                try:
-                    frame, task, t = frame
-                    frame["task"] = task
-                    self.node.get_logger().debug(
-                        f"Storing frame {i} at time {t - t0:.5f}s"
-                    )
-
-                    self.dataset.add_frame(frame)
-                except Exception as e:
-                    self.node.get_logger().error(f"Failed to add frame: {e}")
-                    continue
+            task = episode[0][1]
             try:
-                self.dataset.save_episode()
-            except ValueError as e:
+                self.writer.save_episode(episode, task)
+            except Exception as e:
                 self.node.get_logger().error(f"Failed to save episode: {e}")
-                traceback.print_exc()
                 continue
 
             feedback_msg.episodes_stored += 1
@@ -265,7 +251,7 @@ class Recorder:
         )
 
     def store_episodes(self):
-        if self.dataset is None:
+        if self.writer is None:
             self.node.get_logger().info(
                 "No dataset initialized, skipping episode storage."
             )
@@ -282,7 +268,7 @@ class Recorder:
         self._background_threads.append(thread)
 
     def store_thread(self, episodes):
-        if self.dataset is None:
+        if self.writer is None:
             self.node.get_logger().info(
                 "No dataset initialized, skipping episode storage."
             )
@@ -290,25 +276,11 @@ class Recorder:
         while len(episodes) > 0:
             episode = episodes.pop(0)
             self.node.get_logger().info(f"Storing episode with {len(episode)} frames.")
-            frame0 = episode[0]
-            t0 = frame0[2]
-            for i, frame in enumerate(tqdm(episode, desc="Frame")):
-                try:
-                    frame, task, t = frame
-                    frame["task"] = task
-                    self.node.get_logger().debug(
-                        f"Storing frame {i} at time {t - t0:.5f}s"
-                    )
-
-                    self.dataset.add_frame(frame)
-                except Exception as e:
-                    self.node.get_logger().error(f"Failed to add frame: {e}")
-                    continue
+            task = episode[0][1]
             try:
-                self.dataset.save_episode()
-            except ValueError as e:
+                self.writer.save_episode(episode, task)
+            except Exception as e:
                 self.node.get_logger().error(f"Failed to save episode: {e}")
-                traceback.print_exc()
                 continue
             self.node.get_logger().info(f"Stored episode with {len(episode)} frames.")
             del episode
@@ -326,12 +298,13 @@ class Recorder:
         return response
 
     def finalize(self):
-        if self.dataset is None:
+        if self.writer is None:
             return
 
         self.node.get_logger().info("Finalized dataset")
-        self.dataset.finalize()
+        self.writer.finalize()
         ds = self.dataset
+        self.writer = None
         self.dataset = None
         return ds
 
@@ -371,36 +344,12 @@ class Recorder:
             )
             return False
 
-        if resume:
-            ds = LeRobotDataset.resume(
-                repo_id=dataset_name,
-                root=path,
-                tolerance_s=self.tolerance_s,
-            )
-            self.dataset = ds
-            return
-
-        if os.path.exists(path):
-            dataset = LeRobotDataset(
-                dataset_name, root=path, tolerance_s=self.tolerance_s
-            )
-            ds_features = set(dataset.features) - set(DEFAULT_FEATURES)
-            features = set(self.convertor.get_feature_description())
-            if ds_features != features:
-                raise ValueError(
-                    f"Dataset {dataset_name} already exists with different features. "
-                    f"Expected: {features.keys()}, Found: {ds_features.keys()}"
-                )
-            self.dataset = dataset
-            self.node.get_logger().info(f"Using existing dataset: {dataset_name}")
-        else:
-            self.dataset = LeRobotDataset.create(
-                dataset_name,
-                fps=self.fps,
-                features=self.convertor.get_feature_description(),
-                root=os.path.abspath(os.path.join(self.dataset_root, dataset_name)),
-                tolerance_s=self.tolerance_s,
-            )
+        try:
+            self.writer = DatasetWriter(dataset_name, self.config, resume=resume)
+            self.dataset = self.writer.dataset
+        except Exception as e:
+            self.node.get_logger().error(f"Failed to initialize DatasetWriter: {e}")
+            raise e
 
 
 def main():

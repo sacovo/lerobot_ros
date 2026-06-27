@@ -24,9 +24,6 @@ dev = [
     "maturin>=1.11.2",
 ]
 
-[tool.uv.sources]
-lerobot = { git = "https://github.com/huggingface/lerobot.git" }
-
 [tool.ty.environment]
 extra-paths = [
     "/opt/ros/jazzy/lib/python3.12/site-packages/",
