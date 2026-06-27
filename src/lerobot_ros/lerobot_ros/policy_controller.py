@@ -20,8 +20,9 @@ from std_msgs.msg import Empty, String
 from std_srvs.srv import SetBool, Trigger
 
 from .config import PolicyConfig, ROSFeatureConfig, load_toml_dict, parse_config
-from .ros_torch_utils import BaseTopic, TensorToRosConverter, prepare_frame
+from .ros_torch_utils import BaseTopic, prepare_frame
 from .subscriber import Ros2Feature
+from .core import RosFeaturePublisher
 
 register_third_party_plugins()
 
@@ -220,13 +221,7 @@ class PolicyController:
         self.active_policy_name = None
 
     def setup_action_topics(self, topics: Dict[str, BaseTopic]):
-        self.torch_to_ros = TensorToRosConverter(topics)
-
-        for topic_name, topic in topics.items():
-            if topic.is_action:
-                self.publishers[topic_name] = self.node.create_publisher(
-                    topic.msg_type(), topic_name, topic.qos
-                )
+        self.action_publisher = RosFeaturePublisher(self.node, topics)
 
     def load_policy(self, task, config: PolicyConfig):
         policy_config = PreTrainedConfig.from_pretrained(
@@ -394,14 +389,12 @@ class PolicyController:
                 continue
 
             action, t = self.action_queue.popleft()
-            msgs = self.torch_to_ros.convert(action)
 
             if not self.running:
                 time.sleep(max(0, next_iter - time.time()))
                 continue
 
-            for topic, msg in msgs.items():
-                self.publishers[topic].publish(msg)
+            self.action_publisher.publish(action)
 
             time.sleep(max(0, next_iter - time.time()))
 

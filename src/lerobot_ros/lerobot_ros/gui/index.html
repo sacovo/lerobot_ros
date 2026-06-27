@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeRobot Bag Annotator</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-app">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo">
+                <span class="highlight">LeRobot</span> Bag Annotator
+            </div>
+            <div class="config-bar">
+                <button id="theme-toggle-btn" class="btn-icon" title="Toggle Light/Dark Theme" style="font-size: 16px;">🌓</button>
+                <div class="input-group">
+                    <label for="config-path">TOML Config</label>
+                    <input type="text" id="config-path" value="src/lerobot_ros/config/so101/so101.toml">
+                </div>
+                <div class="input-group">
+                    <label for="repo-id">Dataset Name</label>
+                    <input type="text" id="repo-id" value="so101_annotated_dataset">
+                </div>
+                <div class="input-group checkbox-group">
+                    <input type="checkbox" id="resume-ds">
+                    <label for="resume-ds">Resume</label>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="workspace">
+            <!-- Left Panel: Video & Telemetry -->
+            <section class="left-panel">
+                <div class="panel-card bag-selection">
+                    <h2>Select Bag File</h2>
+                    <div class="bag-inputs">
+                        <select id="bag-select">
+                            <option value="">-- Scan for bags or enter path --</option>
+                        </select>
+                        <input type="text" id="custom-bag-path" placeholder="Or enter custom absolute path to bag...">
+                        <button id="load-bag-btn" class="btn-primary">Load Bag</button>
+                    </div>
+                </div>
+
+                <div class="panel-card viewports-card">
+                    <div class="card-header">
+                        <h2>Camera Feeds</h2>
+                        <span id="current-time-badge" class="badge">0.00s</span>
+                    </div>
+                    <div class="camera-grid" id="camera-container">
+                        <div class="empty-state">No cameras loaded. Please select and load a bag.</div>
+                    </div>
+                </div>
+
+                <div class="panel-card telemetry-card">
+                    <h2>Telemetry & Topics</h2>
+                    <div class="telemetry-table-wrapper">
+                        <table id="telemetry-table">
+                            <thead>
+                                <tr>
+                                    <th>Topic / Field</th>
+                                    <th>Value</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td colspan="2" class="empty-state">No telemetry data.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Panel: Episode Manager -->
+            <section class="right-panel">
+                <div class="panel-card annotator-card">
+                    <h2>Episode Markers</h2>
+                    <div class="marker-controls">
+                        <div class="time-inputs">
+                            <div class="input-group">
+                                <label>Start (s)</label>
+                                <div class="input-with-action">
+                                    <input type="number" id="start-time" step="0.01" min="0">
+                                    <button id="set-start-btn" class="btn-icon" title="Set to current time">⏱️</button>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <label>End (s)</label>
+                                <div class="input-with-action">
+                                    <input type="number" id="end-time" step="0.01" min="0">
+                                    <button id="set-end-btn" class="btn-icon" title="Set to current time">⏱️</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="input-group task-input-group">
+                            <label for="task-name">Task Name / Annotation</label>
+                            <input type="text" id="task-name" placeholder="e.g. pick up the red block">
+                        </div>
+                        <button id="add-episode-btn" class="btn-success w-full">Save Episode Range</button>
+                        <div class="auto-annotate-group" style="margin-top: 12px; display: flex; gap: 8px;">
+                            <button id="auto-annotate-btn" class="btn-primary w-full" style="flex: 2;">⏺ Start Episode (Ctrl+H)</button>
+                            <button id="cancel-annotate-btn" class="btn-danger" style="flex: 1; display: none;">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel-card episodes-card">
+                    <h2>Dataset Episodes</h2>
+                    <div class="episodes-list-wrapper">
+                        <table id="episodes-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Range (s)</th>
+                                    <th>Task</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td colspan="4" class="empty-state">No episodes added yet.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="action-footer">
+                        <button id="convert-btn" class="btn-primary btn-large w-full">Convert & Build Dataset</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Bottom Panel: Timeline & Playback -->
+        <footer class="playback-bar">
+            <div class="graph-container" id="graph-container" style="display: none; width: 100%; padding: 0 16px; margin-bottom: 8px; box-sizing: border-box;">
+                <canvas id="telemetry-graph" style="width: 100%; height: 50px; background: var(--bg-page); border-radius: var(--border-radius-sm); border: 1px solid var(--border-color); display: block;"></canvas>
+            </div>
+            <div class="timeline-container">
+                <div class="timeline-ruler" id="timeline-ruler">
+                    <!-- Shaded regions and scrub line are rendered here -->
+                    <div class="scrub-line" id="scrub-line"></div>
+                </div>
+            </div>
+            <div class="playback-controls">
+                <div class="control-buttons">
+                    <button id="step-back-large-btn" class="btn-secondary" title="Step back 1s">⏪ 1s</button>
+                    <button id="step-back-btn" class="btn-secondary" title="Step back 0.05s">◀</button>
+                    <button id="play-btn" class="btn-primary" title="Play / Pause">▶ Play</button>
+                    <button id="step-forward-btn" class="btn-secondary" title="Step forward 0.05s">▶</button>
+                    <button id="step-forward-large-btn" class="btn-secondary" title="Step forward 1s">1s ⏩</button>
+                </div>
+                <div class="play-speed">
+                    <label for="playback-speed">Speed</label>
+                    <select id="playback-speed">
+                        <option value="0.25">0.25x</option>
+                        <option value="0.5">0.5x</option>
+                        <option value="1.0" selected>1.0x</option>
+                        <option value="2.0">2.0x</option>
+                    </select>
+                </div>
+                <div class="time-display">
+                    <span id="display-time">0.00</span> / <span id="display-duration">0.00</span>s
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Progress Dialog Modal -->
+    <div class="modal-overlay" id="status-modal">
+        <div class="glass-modal">
+            <h2>Building LeRobot Dataset</h2>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="status-progress-fill"></div>
+            </div>
+            <div class="status-message" id="status-message">
+                Please wait, parsing ROS2 bag and assembling episodes...
+            </div>
+            <div class="modal-actions" id="modal-actions" style="display: none;">
+                <button id="close-modal-btn" class="btn-primary">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

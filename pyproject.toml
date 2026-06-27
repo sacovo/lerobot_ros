@@ -5,28 +5,22 @@ description = "Add your description here"
 license = "MIT"
 readme = "README.md"
 dependencies = [
-    "lerobot==0.5.1",
-    "pytest>=9.0.2",
-    "rerun>=1.0.31",
-    "rust-py-timer>=0.1.0",
+  "lerobot==0.5.1",
+  "pytest>=9.0.2",
+  "rerun>=1.0.31",
+  "rust-py-timer>=0.1.0",
 ]
 
 [project.optional-dependencies]
-so101 = [
-    "lerobot[feetech]>=0.4.2",
-]
-smolvla = [
-    "lerobot[smolvla]>=0.4.2",
-]
+so101 = ["lerobot[feetech]>=0.4.2"]
+smolvla = ["lerobot[smolvla]>=0.4.2"]
 
 [dependency-groups]
-dev = [
-    "maturin>=1.11.2",
-]
+dev = ["maturin>=1.11.2"]
 
 
 [tool.ty.environment]
 extra-paths = [
-    "/opt/ros/jazzy/lib/python3.12/site-packages/",
-    "install/lerobot_interfaces/lib/python3.12/site-packages/"
+  "/opt/ros/jazzy/lib/python3.12/site-packages/",
+  "install/lerobot_interfaces/lib/python3.12/site-packages/",
 ]

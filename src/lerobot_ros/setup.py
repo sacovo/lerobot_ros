@@ -6,11 +6,14 @@ setup(
     name=package_name,
     version="0.0.0",
     packages=find_packages(exclude=["test"]),
+    package_data={
+        "lerobot_ros": ["gui/*"],
+    },
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
     ],
-    zip_safe=True,
+    zip_safe=False,
     maintainer="Sandro Covo",
     maintainer_email="sandro@sandrocovo.ch",
     description="TODO: Package description",
@@ -28,6 +31,8 @@ setup(
             "so101_leader = lerobot_ros.so101.leader:main",
             "so101_follower = lerobot_ros.so101.follower:main",
             "replay = lerobot_ros.replay:main",
+            "bag_to_dataset = lerobot_ros.bag_to_dataset:main",
+            "annotation_gui = lerobot_ros.annotation_server:main",
         ],
     },
 )

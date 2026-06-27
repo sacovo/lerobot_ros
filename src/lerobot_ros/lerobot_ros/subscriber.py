@@ -20,17 +20,7 @@ except ImportError:
 from .config import empty_frame
 from .convert import BaseTopic
 from .convert.image import ImageTopic
-
-
-def key_for_topic(topic: BaseTopic):
-    if isinstance(topic, ImageTopic):
-        return f"observation.images.{topic.key}"
-    elif topic.is_meta:
-        return f"meta.{topic.key}"
-    elif topic.is_action:
-        return "action"
-    else:
-        return "observation.state"
+from .core.frame_assembler import FrameAssembler, key_for_topic
 
 
 class Ros2Feature:
@@ -51,6 +41,7 @@ class Ros2Feature:
     ):
         self.node = node
         self.frame_callback = None
+        self.assembler = FrameAssembler(topics)
 
         self.rerun_remote = rerun_remote
         self.visualize = visualize
@@ -293,43 +284,7 @@ class Ros2Feature:
         return converted
 
     def _convert_frame(self, frame: Dict[str, List[torch.Tensor]]):
-        out_frame: Dict[str, List[torch.Tensor]] = {
-            "action": [],
-            "observation.state": [],
-        }
-
-        ds_frame: Dict[str, torch.Tensor] = {}
-
-        # average out the high frequency measurements
-        for topic_name, tensors in frame.items():
-            topic = self.topics[topic_name]
-            key = key_for_topic(topic)
-            if len(tensors) == 0:
-                dtype = topic.feature_description().get("dtype", "float32")
-                if dtype == "video" or dtype == "image":
-                    dtype = "uint8"
-
-                tensor = torch.zeros(
-                    topic.feature_description().get("shape", (1,)),
-                    dtype=(getattr(torch, dtype)),
-                )
-            else:
-                tensor = tensors[-1]
-
-            if key in ["action", "observation.state"]:
-                out_frame[key].append(tensor)
-            else:
-                ds_frame[key] = tensor
-
-        if len(out_frame["action"]) != 0:
-            ds_frame["action"] = torch.cat(out_frame["action"], dim=0)
-
-        if len(out_frame["observation.state"]) != 0:
-            ds_frame["observation.state"] = torch.cat(
-                out_frame["observation.state"], dim=0
-            )
-
-        return ds_frame
+        return self.assembler.assemble(frame)
 
     def register_frame_callback(self, callback):
         """
@@ -350,36 +305,4 @@ class Ros2Feature:
         Get the feature description for the dataset.
         Returns a dictionary mapping topic names to their feature descriptions.
         """
-        feature_description = {
-            "action": {"dtype": "float32", "shape": (0,), "names": []},
-            "observation.state": {"dtype": "float32", "shape": (0,), "names": []},
-        }
-        for topic in self.topics.values():
-            key = key_for_topic(topic)
-            if isinstance(topic, ImageTopic) or isinstance(topic, ImageCompressedTopic):
-                feature_description[key] = {
-                    "dtype": "video",
-                    "shape": (topic.height, topic.width, topic.channels),
-                    "names": ["height", "width", "channels"],
-                }
-                continue
-            if topic.is_meta:
-                feature_description[key] = topic.feature_description()
-                continue
-
-            combined_feature = feature_description[key]
-
-            feature = topic.feature_description()
-            size = combined_feature.get("shape", (0,))[0]
-            feature = topic.feature_description()
-            size += feature.get("shape", (0,))[0]
-
-            combined_feature["shape"] = (size,)
-            combined_feature["names"] = combined_feature["names"] + feature["names"]
-
-        if feature_description["observation.state"]["shape"] == (0,):
-            del feature_description["observation.state"]
-        if feature_description["action"]["shape"] == (0,):
-            del feature_description["action"]
-
-        return feature_description
+        return self.assembler.get_feature_description()
