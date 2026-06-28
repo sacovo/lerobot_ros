@@ -105,6 +105,14 @@ class PolicyController:
             .get_parameter_value()
             .double_value
         )
+        # How long to hold a paused trajectory before discarding it as stale.
+        # Short pauses resume seamlessly; longer ones re-predict from scratch.
+        # 0.0 disables flushing (hold indefinitely).
+        self.pause_flush_timeout_s = (
+            node.declare_parameter("pause_flush_timeout_s", 5.0)
+            .get_parameter_value()
+            .double_value
+        )
         self._last_heartbeat = 0.0
 
         # Safety heartbeat: autonomy only publishes while this is refreshed.
@@ -171,6 +179,11 @@ class PolicyController:
         self.node.get_logger().info(
             f"Started policy '{policy_name}' for task '{task}'"
         )
+        if not self._heartbeat_alive():
+            self.node.get_logger().warn(
+                "No recent heartbeat on 'policy_control/heartbeat'; the policy "
+                "will run but NOT move until an operator starts publishing it."
+            )
 
     def _stop(self, reason: str = ""):
         """Stop execution and flush queued actions so resume cannot replay them."""
@@ -265,11 +278,11 @@ class PolicyController:
                     result.message = "cancelled"
                     return result
 
-                if not self._heartbeat_alive():
-                    goal_handle.abort()
-                    result.success = False
-                    result.message = "heartbeat lost"
-                    return result
+                # The heartbeat gates *actuation*, not the goal: the operator
+                # owns it (e.g. a joystick deadman). While it is stale the goal
+                # stays active but nothing is published, so motion pauses and
+                # resumes as the operator engages. publisher_loop logs why.
+                actuating = self._heartbeat_alive()
 
                 if has_regressor:
                     progress = self._latest_progress
@@ -289,7 +302,7 @@ class PolicyController:
 
                 feedback.progress = float(progress)
                 feedback.elapsed_s = float(elapsed)
-                feedback.status = "running"
+                feedback.status = "running" if actuating else "waiting_for_heartbeat"
                 goal_handle.publish_feedback(feedback)
         finally:
             self._stop(f"goal ended ({result.message or 'unknown'})")
@@ -425,22 +438,68 @@ class PolicyController:
 
     def publisher_loop(self):
         delta_t = 1.0 / self.config.fps
+        paused_since = None
+        flushed_while_paused = False
         while True:
             now = time.time()
             next_iter = now + delta_t
+
+            # Only consume the queue when we are actually going to actuate.
+            # Popping while paused would discard the head of the trajectory and,
+            # on resume, jump to a later action with the first segment skipped.
+            # While paused we leave the queue intact; the position controller
+            # holds the arm, and predict_loop refreshes the trajectory.
+            if not self.running:
+                paused_since = None
+                flushed_while_paused = False
+                time.sleep(max(0, next_iter - time.time()))
+                continue
+
+            # Defense in depth: never actuate unless the safety heartbeat is
+            # fresh. The heartbeat is published by the operator (e.g. a joystick
+            # deadman) and lives outside this repo, so a running policy that
+            # never moves is almost always a missing heartbeat. Say so loudly,
+            # but only while there is a trajectory waiting to go out.
+            if not self._heartbeat_alive():
+                if paused_since is None:
+                    paused_since = time.monotonic()
+                if len(self.action_queue) > 0:
+                    self.node.get_logger().warn(
+                        "Policy '%s' is running but no recent heartbeat on "
+                        "'policy_control/heartbeat' (timeout %.2fs): actions are "
+                        "NOT being published. An operator must publish the "
+                        "heartbeat (e.g. hold the joystick deadman) to enable "
+                        "actuation."
+                        % (self.active_policy_name, self.heartbeat_timeout_s),
+                        throttle_duration_sec=2.0,
+                    )
+                # Hold the trajectory for a short pause (seamless resume), but
+                # discard it once the pause gets long so we re-predict from the
+                # current observation instead of resuming a stale plan.
+                if (
+                    not flushed_while_paused
+                    and self.pause_flush_timeout_s > 0.0
+                    and (time.monotonic() - paused_since) >= self.pause_flush_timeout_s
+                ):
+                    self.action_queue.clear()
+                    flushed_while_paused = True
+                    self.node.get_logger().info(
+                        "Paused for >%.1fs without heartbeat; flushed stale "
+                        "trajectory, will re-predict fresh on resume."
+                        % self.pause_flush_timeout_s
+                    )
+                time.sleep(max(0, next_iter - time.time()))
+                continue
+
+            # Actuating again: clear pause bookkeeping.
+            paused_since = None
+            flushed_while_paused = False
 
             if len(self.action_queue) == 0:
                 time.sleep(max(0, next_iter - time.time()))
                 continue
 
             action, t = self.action_queue.popleft()
-
-            # Defense in depth: never actuate unless running and the safety
-            # heartbeat is fresh.
-            if not self.running or not self._heartbeat_alive():
-                time.sleep(max(0, next_iter - time.time()))
-                continue
-
             self.action_publisher.publish(action)
 
             time.sleep(max(0, next_iter - time.time()))
