@@ -78,7 +78,7 @@ class Recorder:
             subscriber_node,
             config.topics,
             fps=config.fps,
-            rerun_remote=config.rerrun_remote,
+            rerun_remote=config.rerun_remote,
             visualize=self.visualize,
         )
         self.last_t = 0.0

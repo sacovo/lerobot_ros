@@ -1,0 +1,13 @@
+# Goal definition
+int32 episode_id
+int32 repetitions
+---
+# Result definition
+bool success
+string message
+---
+# Feedback definition
+string status
+float32 progress
+int32 current_frame
+int32 total_frames

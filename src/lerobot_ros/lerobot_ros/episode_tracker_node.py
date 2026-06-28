@@ -1,9 +1,9 @@
 import threading
 
 import torch
-from lerobot_interfaces.msg import TaskProgress
+from lerobot_interfaces.msg import PolicyStatus, TaskProgress
 from rclpy.node import Node
-from std_msgs.msg import String
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile
 
 from .config import load_toml_dict, parse_config
 from .episode_tracker import EpisodeTracker
@@ -40,11 +40,16 @@ class EpisodeTrackerNode:
             node, config.topics, config.fps, rerun_remote=None, visualize=False
         )
 
-        self.active_policy_sub = node.create_subscription(
-            String,
-            "active_policy",
-            self.active_policy_callback,
-            10,
+        status_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.status_sub = node.create_subscription(
+            PolicyStatus,
+            "policy_control/status",
+            self.status_callback,
+            status_qos,
         )
 
         self.convertor.register_frame_callback(self.frame_callback)
@@ -69,8 +74,8 @@ class EpisodeTrackerNode:
         self.convertor.running = False
         self.timer.cancel()
 
-    def active_policy_callback(self, msg: String) -> None:
-        policy_name = msg.data
+    def status_callback(self, msg: PolicyStatus) -> None:
+        policy_name = msg.active_policy
         if policy_name in self.models:
             self.active_policy = policy_name
         else:

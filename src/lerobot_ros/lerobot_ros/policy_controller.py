@@ -13,22 +13,44 @@ from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.processor.pipeline import DataProcessorPipeline
 from lerobot.utils.import_utils import register_third_party_plugins
-from lerobot_interfaces.msg._task_progress import TaskProgress
-from lerobot_interfaces.srv import Calibrate, ListPolicies, SetActivePolicy
+from lerobot_interfaces.action import RunPolicy
+from lerobot_interfaces.msg import PolicyStatus, TaskProgress
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import Empty, String
-from std_srvs.srv import SetBool, Trigger
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from std_msgs.msg import Empty
 
 from .config import PolicyConfig, ROSFeatureConfig, load_toml_dict, parse_config
+from .core import RosFeaturePublisher
 from .ros_torch_utils import BaseTopic, prepare_frame
 from .subscriber import Ros2Feature
-from .core import RosFeaturePublisher
 
 register_third_party_plugins()
 
 
+# Latched, depth-1 profile for the status topic so late joiners get the last state.
+STATUS_QOS = QoSProfile(
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+)
+# Reliable, depth-1 profile for the safety heartbeat.
+HEARTBEAT_QOS = QoSProfile(
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=QoSReliabilityPolicy.RELIABLE,
+)
+
+
 class PolicyController:
-    """Control robot with output from a pretrained policy."""
+    """Control robot with output from a pretrained policy.
+
+    Autonomous execution is driven through the ``run_policy`` action server:
+    sending a goal runs a policy, cancelling the goal (or losing the safety
+    heartbeat) stops it. The latest state is published on a latched
+    ``policy_control/status`` topic.
+    """
 
     def __init__(self, node: Node, config: ROSFeatureConfig, subscriber_node: Node):
         self.node = node
@@ -39,186 +61,248 @@ class PolicyController:
             subscriber_node,
             topics=config.topics,
             fps=config.fps,
-            rerun_remote=config.rerrun_remote,
+            rerun_remote=config.rerun_remote,
             visualize=config.visualize,
         )
 
         self.observation_queue = Queue(maxsize=100)
         self.action_queue = deque(maxlen=100)
 
-        self.qos_profile = 10
-
-        self.task = None
-        self._active_policy = None
-
+        # Mutable run state, guarded by _state_lock for atomic transitions.
+        self._state_lock = threading.Lock()
         self.running = False
         self.collect_frames = False
+        self._active_policy = None
+        self._current_task = ""
+        self._latest_progress = 0.0
+        self._task_start_mono = None
+        self._goal_active = False
 
-        self.predict_thread = threading.Thread(
-            target=self.predict_loop,
-            daemon=True,
-        )
+        self.predict_thread = threading.Thread(target=self.predict_loop, daemon=True)
 
         self.timings = {
             "predict": [],
             "blend": [],
         }
 
-        self.calibration = False
-        self.calibration_frames = Queue(maxsize=100)
-        self.calibration_n_frames = 20
-        self.calibration_thread = threading.Thread(
-            target=self.calibrate_ttt_thread,
-            args=(self.calibration_frames,),
-            daemon=True,
-        )
-
-        self._predicted_timesteps = set()
-        self.publishers = {}
-
         self.policies: Dict[
             str, Tuple[DataProcessorPipeline, PreTrainedPolicy, DataProcessorPipeline]
         ] = {}
 
-        self.task_subscrber = node.create_subscription(
-            String, "task", self.task_callback, 10
-        )
+        # Parameters
         self.task_completion_threshold = (
             node.declare_parameter("task_completion_threshold", 0.9)
             .get_parameter_value()
             .double_value
         )
-
-        self.policy_done_pub = self.node.create_publisher(
-            Empty,
-            "policy_control/done",
-            10,
+        self.max_episode_length_s = (
+            node.declare_parameter("max_episode_length_s", 0.0)
+            .get_parameter_value()
+            .double_value
         )
+        self.heartbeat_timeout_s = (
+            node.declare_parameter("heartbeat_timeout_s", 0.5)
+            .get_parameter_value()
+            .double_value
+        )
+        self._last_heartbeat = 0.0
+
+        # Safety heartbeat: autonomy only publishes while this is refreshed.
+        self.heartbeat_sub = node.create_subscription(
+            Empty, "policy_control/heartbeat", self.heartbeat_callback, HEARTBEAT_QOS
+        )
+
+        # Progress regressor feedback (optional, per policy).
         self.progress_subscriber = node.create_subscription(
             TaskProgress, "episode_progress", self.progress_callback, 10
         )
 
-        # Action and observation queue
+        # Latched status topic for operators / GUIs.
+        self.status_pub = node.create_publisher(
+            PolicyStatus, "policy_control/status", STATUS_QOS
+        )
 
+        # Action and observation queue
         self.setup_action_topics(config.topics)
 
-        self.active_policy_pub = node.create_publisher(String, "/active_policy", 10)
         self.convertor.register_frame_callback(self.frame_callback)
         self.convertor.setup_subscribers()
 
-        self.publisher_thread = threading.Thread(
-            target=self.publisher_loop,
-            daemon=True,
-        )
-        self.task = None
+        self.publisher_thread = threading.Thread(target=self.publisher_loop, daemon=True)
 
-        self.node.create_service(ListPolicies, "list_policies", self.list_policies)
-        self.node.create_service(SetBool, "set_policy_running", self.set_policy_running)
-        self.node.create_service(
-            Calibrate, "calibrate", self.trigger_calibration_service
-        )
-        self.node.create_service(
-            Trigger, "toggle_policy_running", self.toggle_policy_running_service
-        )
-        self.node.create_service(
-            SetActivePolicy, "set_active_policy", self.set_policy_service
+        # Action server
+        self._cb_group = ReentrantCallbackGroup()
+        self._run_policy_server = ActionServer(
+            self.node,
+            RunPolicy,
+            "run_policy",
+            execute_callback=self.execute_callback,
+            goal_callback=self.goal_callback,
+            cancel_callback=self.cancel_callback,
+            callback_group=self._cb_group,
         )
 
         self.load_policies(config.policies)
-        self.autonomy_modse = "manual"
+
+        # Refresh the latched status (heartbeat liveness / progress) at 2 Hz.
+        self.status_timer = node.create_timer(0.5, self.publish_status)
 
         self.publisher_thread.start()
         self.predict_thread.start()
-        self.calibration_thread.start()
 
         self.convertor.running = True
+        self.publish_status()
 
-    def task_callback(self, msg: String):
-        task = msg.data
-        self.task = task
+    # ------------------------------------------------------------------
+    # State transitions
+    # ------------------------------------------------------------------
+
+    def _start(self, policy_name: str, task: str):
+        """Begin autonomous execution of ``policy_name`` for ``task``."""
+        with self._state_lock:
+            self.active_policy_name = policy_name  # setter validates + weights
+            self._current_task = task
+            self._latest_progress = 0.0
+            self.action_queue.clear()
+            self.collect_frames = True
+            self.running = True
+            self._task_start_mono = time.monotonic()
+        self.publish_status()
+        self.node.get_logger().info(
+            f"Started policy '{policy_name}' for task '{task}'"
+        )
+
+    def _stop(self, reason: str = ""):
+        """Stop execution and flush queued actions so resume cannot replay them."""
+        with self._state_lock:
+            self.running = False
+            self.collect_frames = False
+            self.action_queue.clear()
+            self.active_policy_name = None
+            self._current_task = ""
+            self._latest_progress = 0.0
+            self._task_start_mono = None
+        self.publish_status()
+        if reason:
+            self.node.get_logger().info(f"Stopped policy: {reason}")
+
+    def heartbeat_callback(self, _msg: Empty):
+        self._last_heartbeat = time.monotonic()
+
+    def _heartbeat_alive(self) -> bool:
+        if self.heartbeat_timeout_s <= 0.0:
+            return True
+        return (time.monotonic() - self._last_heartbeat) <= self.heartbeat_timeout_s
+
+    def publish_status(self):
+        msg = PolicyStatus()
+        msg.running = self.running
+        msg.active_policy = self.active_policy_name or ""
+        msg.task = self._current_task or ""
+        msg.available_policies = list(self.policies.keys())
+        msg.progress = float(self._latest_progress)
+        msg.heartbeat_alive = self._heartbeat_alive()
+        self.status_pub.publish(msg)
 
     def progress_callback(self, msg: TaskProgress):
         if msg.policy_name != self.active_policy_name:
             return
-        self.node.get_logger().info(
-            f"Received progress update for policy {msg.policy_name}: {msg.progress}"
-        )
-        if msg.progress >= self.task_completion_threshold:
-            self.node.get_logger().info(
-                f"Task {self.task} completed by policy {msg.policy_name}."
+        self._latest_progress = msg.progress
+
+    # ------------------------------------------------------------------
+    # Action server
+    # ------------------------------------------------------------------
+
+    def goal_callback(self, _goal_request) -> GoalResponse:
+        with self._state_lock:
+            if self._goal_active:
+                self.node.get_logger().warn(
+                    "Rejecting run_policy goal: controller is busy."
+                )
+                return GoalResponse.REJECT
+            self._goal_active = True
+        return GoalResponse.ACCEPT
+
+    def cancel_callback(self, _goal_handle) -> CancelResponse:
+        return CancelResponse.ACCEPT
+
+    def execute_callback(self, goal_handle):
+        request = goal_handle.request
+        policy_name = request.policy_name
+        task = request.task
+        result = RunPolicy.Result()
+
+        if policy_name not in self.policies:
+            self._goal_active = False
+            goal_handle.abort()
+            result.success = False
+            result.message = f"unknown policy: {policy_name}"
+            return result
+
+        policy_cfg = self.config.policies[policy_name]
+        has_regressor = policy_cfg.progress_model is not None
+        max_len = policy_cfg.max_episode_length_s
+        if max_len is None:
+            max_len = self.max_episode_length_s  # node-level fallback (0 = disabled)
+
+        if not has_regressor and max_len <= 0.0:
+            self.node.get_logger().warn(
+                f"Policy '{policy_name}' has no progress regressor and no "
+                "max_episode_length_s; it will only stop on cancel or heartbeat loss."
             )
-            self.policy_done_pub.publish(Empty())
-            self.end_task()
 
-    def trigger_calibration_service(
-        self, request: Calibrate.Request, response: Calibrate.Response
-    ):
-        self.calibration_n_frames = request.frames
-        self.trigger_calibration()
-        response.success = True
+        self._start(policy_name, task)
 
-        return response
+        feedback = RunPolicy.Feedback()
+        try:
+            while True:
+                time.sleep(0.05)
+                elapsed = time.monotonic() - self._task_start_mono
 
-    def trigger_calibration(self):
-        self.running = False
-        self.calibration_frames.queue.clear()
-        self.collect_frames = True
-        self.calibration = True
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                    result.success = False
+                    result.message = "cancelled"
+                    return result
 
-    def _set_running(self, running: bool):
-        self.running = running
-        if not running:
-            self.collect_frames = False
-        else:
-            self.collect_frames = True
+                if not self._heartbeat_alive():
+                    goal_handle.abort()
+                    result.success = False
+                    result.message = "heartbeat lost"
+                    return result
 
-    def toggle_policy_running_service(
-        self, request: Trigger.Request, response: Trigger.Response
-    ):
-        self._set_running(not self.running)
+                if has_regressor:
+                    progress = self._latest_progress
+                    if progress >= self.task_completion_threshold:
+                        goal_handle.succeed()
+                        result.success = True
+                        result.message = "completed"
+                        return result
+                else:
+                    progress = (elapsed / max_len) if max_len > 0 else 0.0
 
-        response.success = True
-        response.message = f"Policy running set to {self.running}"
-        return response
+                if max_len > 0.0 and elapsed >= max_len:
+                    goal_handle.succeed()
+                    result.success = True
+                    result.message = "timeout"
+                    return result
 
-    def set_policy_running(self, request: SetBool.Request, response: SetBool.Response):
-        self._set_running(request.data)
+                feedback.progress = float(progress)
+                feedback.elapsed_s = float(elapsed)
+                feedback.status = "running"
+                goal_handle.publish_feedback(feedback)
+        finally:
+            self._stop(f"goal ended ({result.message or 'unknown'})")
+            self._goal_active = False
 
-        response.success = True
-        response.message = f"Policy running set to {self.running}"
-        return response
+    # ------------------------------------------------------------------
+    # Policy loading / accessors
+    # ------------------------------------------------------------------
 
     def load_policies(self, config: Dict[str, PolicyConfig]):
         """Load policies based on the provided configuration."""
         for name, policy_config in config.items():
             self.load_policy(name, policy_config)
-
-    def list_policies(
-        self, request: ListPolicies.Request, response: ListPolicies.Response
-    ):
-        tasks = list(self.policies.keys())
-        response.policy_names = tasks
-        return response
-
-    def set_policy_service(
-        self, request: SetActivePolicy.Request, response: SetActivePolicy.Response
-    ):
-        try:
-            self.set_policy(request.policy_name)
-            response.success = True
-            return response
-        except ValueError:
-            response.success = False
-            return response
-
-    def set_policy(self, policy_name: str):
-        if policy_name not in self.policies:
-            raise ValueError(f"Policy {policy_name} is not loaded.")
-        self.active_policy_name = policy_name
-        self.active_policy_pub.publish(String(data=policy_name))
-
-    def end_task(self):
-        self.active_policy_name = None
 
     def setup_action_topics(self, topics: Dict[str, BaseTopic]):
         self.action_publisher = RosFeaturePublisher(self.node, topics)
@@ -241,7 +325,6 @@ class PolicyController:
             rename_map=config.rename_map,
         )
         policy.eval()
-        # policy.reset()
 
         processor_kwargs = {}
         postprocessor_kwargs = {}
@@ -269,6 +352,10 @@ class PolicyController:
 
         self.policies[task] = (preprocessor, policy, postprocessor)
 
+    # ------------------------------------------------------------------
+    # Worker loops
+    # ------------------------------------------------------------------
+
     def frame_callback(self, observation, t):
         if not self.has_active_policy or not self.collect_frames:
             return
@@ -276,7 +363,7 @@ class PolicyController:
         with torch.inference_mode():
             # Add metadata on the callback thread, but do NOT call prepare_frame here
             # to avoid blocking the subscriber thread with tensor processing/device transfers.
-            observation["task"] = self.task or ""
+            observation["task"] = self._current_task or ""
             observation["robot_type"] = self.config.robot_type
 
         self.observation_queue.put((observation, t))
@@ -300,12 +387,6 @@ class PolicyController:
             # Batch and preprocess the observation on the target device
             with torch.inference_mode():
                 observation = prepare_frame(observation, config.device)
-
-            if self.calibration:
-                with torch.inference_mode():
-                    observation = pre(observation)
-                self.calibration_frames.put(observation)
-                continue
 
             remaining_actions = len(self.action_queue)
 
@@ -342,42 +423,6 @@ class PolicyController:
             self.timings["predict"].append(t1 - t0)
             self.timings["blend"].append(t2 - t1)
 
-    def calibrate_ttt_thread(self, frames):
-        frames = []
-        while True:
-            frame = self.calibration_frames.get()
-            frames.append(frame)
-            self.calibration_frames.task_done()
-
-            if len(frames) < self.calibration_n_frames:
-                continue
-
-            self.collect_frames = False
-            self.calibration = False
-            self.calibration_frames.queue.clear()
-
-            batch = {}
-
-            self.node.get_logger().info(
-                f"Starting calibration with {len(frames)} frames."
-            )
-
-            for key, value in frames[0].items():
-                if isinstance(value, torch.Tensor):
-                    batch[key] = torch.cat([f[key] for f in frames], dim=0)
-                else:
-                    batch[key] = [f[key] for f in frames]
-
-            policy = self.get_active_policy()[1]
-            if hasattr(policy, "test_time_train"):
-                policy.test_time_train(batch)
-                self.node.get_logger().info("Calibration completed.")
-            else:
-                self.node.get_logger().info(
-                    "Policy does not support test-time training."
-                )
-            frames = []
-
     def publisher_loop(self):
         delta_t = 1.0 / self.config.fps
         while True:
@@ -390,13 +435,19 @@ class PolicyController:
 
             action, t = self.action_queue.popleft()
 
-            if not self.running:
+            # Defense in depth: never actuate unless running and the safety
+            # heartbeat is fresh.
+            if not self.running or not self._heartbeat_alive():
                 time.sleep(max(0, next_iter - time.time()))
                 continue
 
             self.action_publisher.publish(action)
 
             time.sleep(max(0, next_iter - time.time()))
+
+    # ------------------------------------------------------------------
+    # Active-policy helpers
+    # ------------------------------------------------------------------
 
     @property
     def active_policy_name(self) -> Optional[str]:
@@ -464,7 +515,7 @@ def main():
     )
     controller = PolicyController(node, config, subscriber_node)
 
-    executor = rclpy.executors.SingleThreadedExecutor()
+    executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(subscriber_node)
     executor.add_node(node)
 
@@ -475,7 +526,7 @@ def main():
         pass
     controller.cleanup()
     node.destroy_node()
-    # subscriber_node.destroy_node()
+    subscriber_node.destroy_node()
     if rclpy.ok():
         rclpy.shutdown()
 

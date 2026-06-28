@@ -1,0 +1,13 @@
+# Goal
+string policy_name      # must be one of the loaded policies
+string task             # natural-language task string passed to the policy
+---
+# Result
+bool success            # true = task completed (regressor or timed-out cleanly)
+string message          # human-readable reason: "completed", "timeout",
+                        # "cancelled", "heartbeat lost", "unknown policy"
+---
+# Feedback
+float32 progress        # regressor progress in [0,1], or elapsed/max for time-based
+float32 elapsed_s
+string status           # "running" | "stalled" | ...

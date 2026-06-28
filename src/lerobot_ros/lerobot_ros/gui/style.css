@@ -634,3 +634,23 @@ td pre {
     display: flex;
     justify-content: center;
 }
+
+.progress-bar-fill.error {
+    background: #ef4444 !important;
+}
+
+.progress-bar-fill.success {
+    background: #22c55e !important;
+}
+
+.warning-banner {
+    background-color: rgba(239, 68, 68, 0.15);
+    border: 1px solid #ef4444;
+    color: #fca5a5;
+    padding: 10px 14px;
+    border-radius: var(--border-radius-sm);
+    margin-bottom: 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-line;
+}

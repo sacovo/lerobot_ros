@@ -63,6 +63,8 @@ const statusProgressFill = document.getElementById('status-progress-fill');
 const statusMessage = document.getElementById('status-message');
 const modalActions = document.getElementById('modal-actions');
 const closeModalBtn = document.getElementById('close-modal-btn');
+const cancelModalBtn = document.getElementById('cancel-modal-btn');
+const warningBanner = document.getElementById('warning-banner');
 const autoAnnotateBtn = document.getElementById('auto-annotate-btn');
 const cancelAnnotateBtn = document.getElementById('cancel-annotate-btn');
 
@@ -73,7 +75,7 @@ const stepForwardBtn = document.getElementById('step-forward-btn');
 const stepForwardLargeBtn = document.getElementById('step-forward-large-btn');
 
 // Initialize
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
     // Restore config path and theme from localStorage
     const savedConfig = localStorage.getItem('configPath');
     if (savedConfig) {
@@ -84,6 +86,21 @@ window.addEventListener('DOMContentLoaded', () => {
         document.body.classList.add('light-theme');
     } else if (savedTheme === 'dark') {
         document.body.classList.remove('light-theme');
+    }
+
+    // Load server-side default config
+    try {
+        const response = await fetch('/api/config');
+        const data = await response.json();
+        if (data.default_config) {
+            configPathInput.placeholder = data.default_config;
+            if (!savedConfig) {
+                configPathInput.value = data.default_config;
+                localStorage.setItem('configPath', data.default_config);
+            }
+        }
+    } catch (err) {
+        console.error('Failed to load server config:', err);
     }
 
     scanBags();
@@ -156,6 +173,15 @@ function setupEventListeners() {
     convertBtn.addEventListener('click', startConversion);
     closeModalBtn.addEventListener('click', () => {
         statusModal.classList.remove('active');
+    });
+    cancelModalBtn.addEventListener('click', async () => {
+        try {
+            cancelModalBtn.disabled = true;
+            cancelModalBtn.textContent = 'Cancelling...';
+            await fetch('/api/convert/cancel', { method: 'POST' });
+        } catch (e) {
+            console.error('Failed to request cancel:', e);
+        }
     });
 
     // Auto Annotation
@@ -306,6 +332,14 @@ async function loadFrame(timeSec) {
             return;
         }
         const data = await response.json();
+
+        // Update warnings display
+        if (data.warnings && data.warnings.length > 0) {
+            warningBanner.textContent = data.warnings.join('\n');
+            warningBanner.style.display = 'block';
+        } else {
+            warningBanner.style.display = 'none';
+        }
 
         // 1. Update Camera Feeds
         if (data.cameras) {
@@ -677,9 +711,16 @@ async function startConversion() {
 
     // Open progress modal
     statusModal.classList.add('active');
+    statusProgressFill.className = 'progress-bar-fill'; // Reset state classes
     statusProgressFill.style.width = '0%';
     statusMessage.textContent = 'Sending conversion request to backend...';
-    modalActions.style.display = 'none';
+    
+    // Show cancel button, hide close button during startup
+    closeModalBtn.style.display = 'none';
+    cancelModalBtn.style.display = 'inline-block';
+    cancelModalBtn.disabled = false;
+    cancelModalBtn.textContent = 'Cancel Conversion';
+    modalActions.style.display = 'flex';
 
     try {
         const response = await fetch('/api/convert', {
@@ -698,11 +739,12 @@ async function startConversion() {
             })
         });
 
-        const data = await response.json();
-        
-        if (data.error) {
-            statusMessage.textContent = `Error: ${data.error}`;
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            statusMessage.textContent = `Error: ${data.detail || response.statusText}`;
             modalActions.style.display = 'flex';
+            closeModalBtn.style.display = 'inline-block';
+            cancelModalBtn.style.display = 'none';
             return;
         }
 
@@ -712,6 +754,8 @@ async function startConversion() {
     } catch (err) {
         statusMessage.textContent = `Network failure: ${err.message}`;
         modalActions.style.display = 'flex';
+        closeModalBtn.style.display = 'inline-block';
+        cancelModalBtn.style.display = 'none';
     }
 }
 
@@ -728,16 +772,29 @@ async function pollStatus() {
         }
 
         if (data.running) {
+            closeModalBtn.style.display = 'none';
+            cancelModalBtn.style.display = 'inline-block';
+            modalActions.style.display = 'flex';
             // Keep polling
             setTimeout(pollStatus, 500);
         } else {
-            // Completed or failed
-            statusProgressFill.style.width = '100%';
+            // Completed, failed, or cancelled
             modalActions.style.display = 'flex';
+            closeModalBtn.style.display = 'inline-block';
+            cancelModalBtn.style.display = 'none';
+            
+            statusProgressFill.style.width = '100%';
+            if (data.state === 'error') {
+                statusProgressFill.className = 'progress-bar-fill error';
+            } else if (data.state === 'done') {
+                statusProgressFill.className = 'progress-bar-fill success';
+            }
         }
     } catch (err) {
         statusMessage.textContent = `Status Polling Error: ${err.message}`;
         modalActions.style.display = 'flex';
+        closeModalBtn.style.display = 'inline-block';
+        cancelModalBtn.style.display = 'none';
     }
 }
 

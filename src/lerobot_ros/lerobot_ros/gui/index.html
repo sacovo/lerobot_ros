@@ -51,6 +51,7 @@
                         <h2>Camera Feeds</h2>
                         <span id="current-time-badge" class="badge">0.00s</span>
                     </div>
+                    <div id="warning-banner" class="warning-banner" style="display: none;"></div>
                     <div class="camera-grid" id="camera-container">
                         <div class="empty-state">No cameras loaded. Please select and load a bag.</div>
                     </div>
@@ -181,7 +182,8 @@
                 Please wait, parsing ROS2 bag and assembling episodes...
             </div>
             <div class="modal-actions" id="modal-actions" style="display: none;">
-                <button id="close-modal-btn" class="btn-primary">Close</button>
+                <button id="cancel-modal-btn" class="btn-secondary" style="display: none; background-color: #3f3f46; color: #f4f4f5; border: 1px solid #52525b; margin-right: 8px;">Cancel Conversion</button>
+                <button id="close-modal-btn" class="btn-primary" style="display: none;">Close</button>
             </div>
         </div>
     </div>

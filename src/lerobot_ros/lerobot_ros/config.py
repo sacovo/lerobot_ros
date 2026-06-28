@@ -31,6 +31,7 @@ class PolicyConfig:
         policy_config: Optional[dict] = None,
         action_queue_size: int = 30,
         action_smoothing_beta: float = 1.0,
+        max_episode_length_s: Optional[float] = None,
     ):
         self.pretrained_name_or_path = pretrained_name_or_path
         self.device = device
@@ -41,7 +42,7 @@ class PolicyConfig:
         self.action_queue_size = action_queue_size
         self.action_smoothing_beta = action_smoothing_beta
         self.progress_model = progress_model
-        self.value01 = "Hallo"
+        self.max_episode_length_s = max_episode_length_s
 
 
 def load_qos(params):
@@ -73,7 +74,7 @@ class ROSFeatureConfig:
 
     qos: QoSProfile = field(default_factory=lambda: QOS_SENSOR_DATA)
     visualize: bool = False
-    rerrun_remote: Optional[str] = None
+    rerun_remote: Optional[str] = None
     fps: int = 20
     tolerance_s: float = 0.01
     dataset_root: str = "./datasets"
@@ -150,6 +151,6 @@ def parse_config(config: dict) -> ROSFeatureConfig:
         tolerance_s=tolerance_s,
         dataset_root=dataset_root,
         visualize=config.get("visualize", False),
-        rerrun_remote=config.get("rerun_remote", None),
+        rerun_remote=config.get("rerun_remote", None),
         robot_type=config.get("robot_type", ""),
     )

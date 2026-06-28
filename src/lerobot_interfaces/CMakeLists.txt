@@ -29,16 +29,15 @@ find_package(action_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/Calibrate.srv"
   "srv/EndEpisode.srv"
-  "srv/ListPolicies.srv"
   "srv/NewDataset.srv"
-  "srv/SetActivePolicy.srv"
   "srv/StartEpisode.srv"
   "srv/FinalizeDataset.srv"
   "srv/PushToHub.srv"
   "msg/TaskProgress.msg"
+  "msg/PolicyStatus.msg"
   "action/StoreEpisodes.action"
+  "action/RunPolicy.action"
   DEPENDENCIES geometry_msgs action_msgs
  )
 
