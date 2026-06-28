@@ -148,21 +148,23 @@ ros2 run lerobot_ros policy_controller --ros-args -p config:=...
 
 ```
 
-The node is controlled by service calls:
+The node is controlled through the `run_policy` action. Sending a goal starts a
+policy; cancelling the goal stops it. Available policies are listed on the
+latched `policy_control/status` topic.
 
 ```bash
 
-# get the policies you can choose
-ros2 service call /list_policies lerobot_interfaces/srv/ListPolicies
+# see loaded policies and current state (latched)
+ros2 topic echo --once /policy_control/status
 
-ros2 service call /set_active_policy lerobot_interfaces/srv/SetActivePolicy 'policy_name: "key"'
-
-# enable autonomous control and disable it
-
-ros2 service call /set_policy_running std_srvs/srv/SetBool 'data: true'
-
-ros2 service call /set_policy_running std_srvs/srv/SetBool 'data: false'
+# run a task (cancel with Ctrl-C to stop)
+ros2 action send_goal /run_policy lerobot_interfaces/action/RunPolicy \
+  '{policy_name: "key", task: "do the thing"}' --feedback
 ```
+
+Actuation additionally requires a fresh `policy_control/heartbeat`
+(`std_msgs/Empty`) published by the operator — see the autonomy/safety section
+in the [repository README](../../README.md).
 
 You can also replay a dataset to check whether the actions have been recorded correctly. Be aware that this will publish actions to a topic that controls your robot!
 
