@@ -1,3 +1,4 @@
+import contextlib
 import json
 import threading
 import time
@@ -391,6 +392,14 @@ class PolicyController:
         )
         policy.eval()
 
+        if getattr(policy_config, "compile_model", False):
+            try:
+                # "cudagraphs" avoids Inductor/Triton and works on Jetson without a C compiler.
+                policy = torch.compile(policy, backend="cudagraphs")
+                self.node.get_logger().info(f"torch.compile (cudagraphs) applied to '{task}'")
+            except Exception as e:
+                self.node.get_logger().warn(f"torch.compile failed, running eager: {e}")
+
         processor_kwargs = {}
         postprocessor_kwargs = {}
 
@@ -491,7 +500,12 @@ class PolicyController:
             _sync()
             t1 = time.time()
 
-            with torch.inference_mode():
+            _autocast = (
+                torch.autocast(config.device, dtype=torch.float16)
+                if config.autocast and is_cuda
+                else contextlib.nullcontext()
+            )
+            with torch.inference_mode(), _autocast:
                 action_chunk = policy.predict_action_chunk(observation)
             _sync()
             t2 = time.time()

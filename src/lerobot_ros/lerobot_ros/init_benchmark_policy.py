@@ -109,9 +109,11 @@ def main():
 
     print("\nDone. Add this block to your TOML config:")
     print()
+    chunk = policy_cfg.chunk_size
     print(f'[policies.benchmark_{args.policy_type}]')
     print(f'pretrained_name_or_path = "{output}"')
     print(f'device = "{args.device}"')
+    print(f'action_queue_size = {int(chunk * 0.8)}  # trigger re-infer at 80% of chunk_size={chunk}')
     print('# ds_repo_id is omitted — feature shapes are derived from [topics]')
     print()
     print("Then run the policy controller with:")

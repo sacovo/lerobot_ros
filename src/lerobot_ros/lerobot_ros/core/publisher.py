@@ -1,9 +1,9 @@
-from typing import Any, Dict
+from typing import Dict
 
 import torch
-from rclpy.node import Node
 from lerobot_ros.convert.base import BaseTopic
 from lerobot_ros.ros_torch_utils import TensorToRosConverter
+from rclpy.node import Node
 
 class RosFeaturePublisher:
     def __init__(self, node: Node, topics: Dict[str, BaseTopic], topic_prefix: str = ""):
@@ -15,7 +15,7 @@ class RosFeaturePublisher:
         self.publishers = {
             name: node.create_publisher(
                 topic.msg_type(),
-                f"{topic_prefix}/{name}" if topic_prefix else name,
+                f"{topic_prefix}/{name.lstrip('/')}" if topic_prefix else name,
                 10,
             )
             for name, topic in topics.items() if topic.is_action or topic.is_meta

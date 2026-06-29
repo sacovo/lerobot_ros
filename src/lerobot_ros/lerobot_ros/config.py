@@ -32,6 +32,7 @@ class PolicyConfig:
         action_queue_size: int = 30,
         action_smoothing_beta: float = 1.0,
         max_episode_length_s: Optional[float] = None,
+        autocast: bool = False,
     ):
         self.pretrained_name_or_path = pretrained_name_or_path
         self.device = device
@@ -43,6 +44,7 @@ class PolicyConfig:
         self.action_smoothing_beta = action_smoothing_beta
         self.progress_model = progress_model
         self.max_episode_length_s = max_episode_length_s
+        self.autocast = autocast
 
 
 def load_qos(params):
