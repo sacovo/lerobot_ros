@@ -46,6 +46,14 @@ def main():
     parser.add_argument("--exclude-tasks", type=str, nargs="*", default=["idle", "reset", "none", "false"], help="Task names (lowercase) that indicate idle/reset.")
     parser.add_argument("--default-task-name", type=str, default="task", help="Default task name when using a boolean task-topic.")
     parser.add_argument("--resume", action="store_true", help="Resume writing to an existing dataset.")
+    parser.add_argument(
+        "--human-intervention-topic",
+        type=str,
+        default=None,
+        help="Topic (std_msgs/Bool) indicating human intervention frames. When set, "
+             "an 'intervention' column (float32, 1=human, 0=policy) is added to the dataset. "
+             "Overrides the value in the TOML config if provided.",
+    )
     args = parser.parse_args()
 
     # Load configuration
@@ -53,8 +61,13 @@ def main():
     if not os.path.exists(config_path):
         print(f"Error: Configuration file '{config_path}' does not exist.")
         sys.exit(1)
-    
+
     config = parse_config(load_toml_dict(config_path))
+
+    # CLI flag overrides TOML config value
+    if args.human_intervention_topic:
+        config.human_intervention_topic = args.human_intervention_topic
+
     print(f"Loaded config from {config_path}")
 
     # Determine storage ID
@@ -102,6 +115,19 @@ def main():
     for b_top, c_top in bag_to_config_map.items():
         print(f"  {b_top} -> {c_top}")
 
+    # Resolve human intervention topic
+    bag_intervention_topic = None
+    if config.human_intervention_topic:
+        norm = config.human_intervention_topic.strip("/")
+        for bag_topic in topic_types.keys():
+            if bag_topic.strip("/") == norm:
+                bag_intervention_topic = bag_topic
+                break
+        if bag_intervention_topic:
+            print(f"Using intervention topic '{bag_intervention_topic}' to label human-controlled frames.")
+        else:
+            print(f"Warning: human_intervention_topic '{config.human_intervention_topic}' not found in bag.")
+
     # Map task/episode control topic
     bag_task_topic = None
     if not args.task:
@@ -130,12 +156,13 @@ def main():
 
     # Processing loop
     latest_msgs = {}
+    latest_intervention = False  # most-recent value from intervention topic
     episode_active = False
     current_task = None
     t_start = None
     t_next_sample = None
     episode_frames = []
-    
+
     # If the user specified a static task name, we start active
     if args.task:
         episode_active = True
@@ -147,6 +174,16 @@ def main():
         topic_name, data, timestamp = reader.read_next()
         t_sec = timestamp / 1e9
         count += 1
+
+        # Track human intervention signal
+        if bag_intervention_topic and topic_name == bag_intervention_topic:
+            try:
+                msg_class = topic_types[topic_name]
+                msg = deserialize_message(data, msg_class)
+                val = msg.data if hasattr(msg, "data") else False
+                latest_intervention = bool(val)
+            except Exception as e:
+                print(f"Error reading intervention topic: {e}")
 
         # Check if topic is a data topic
         if topic_name in bag_to_config_map:
@@ -196,7 +233,7 @@ def main():
                     elif task_name != current_task:
                         if len(episode_frames) > 0:
                             print(f"[{t_sec:.2f}s] Ending episode for task '{current_task}' with {len(episode_frames)} frames (task changed)")
-                            writer.save_episode(episode_frames, current_task)
+                            writer.save_episode(episode_frames, current_task, success=True)
                         current_task = task_name
                         t_start = t_sec
                         t_next_sample = t_start
@@ -206,7 +243,7 @@ def main():
                     if episode_active:
                         if len(episode_frames) > 0:
                             print(f"[{t_sec:.2f}s] Ending episode for task '{current_task}' with {len(episode_frames)} frames")
-                            writer.save_episode(episode_frames, current_task)
+                            writer.save_episode(episode_frames, current_task, success=True)
                         episode_active = False
                         current_task = None
                         t_start = None
@@ -219,13 +256,15 @@ def main():
         if episode_active and t_start is not None:
             while t_sec >= t_next_sample:
                 frame = assembler.assemble(latest_msgs)
+                if writer.track_intervention:
+                    frame["intervention"] = torch.tensor([1.0 if latest_intervention else 0.0])
                 episode_frames.append((frame, current_task, t_next_sample))
                 t_next_sample += 1.0 / config.fps
 
     # Finalize any remaining active episode at the end of the bag
     if episode_active and len(episode_frames) > 0:
         print(f"Ending final episode for task '{current_task}' with {len(episode_frames)} frames")
-        writer.save_episode(episode_frames, current_task)
+        writer.save_episode(episode_frames, current_task, success=True)
 
     print("Finalizing dataset (computing statistics, etc.)...")
     try:

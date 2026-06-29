@@ -33,6 +33,7 @@ setup(
             "replay = lerobot_ros.replay:main",
             "bag_to_dataset = lerobot_ros.bag_to_dataset:main",
             "annotation_gui = lerobot_ros.annotation_server:main",
+            "init_benchmark_policy = lerobot_ros.init_benchmark_policy:main",
         ],
     },
 )

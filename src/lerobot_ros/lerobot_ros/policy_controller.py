@@ -1,8 +1,10 @@
+import json
 import threading
 import time
+import types
 from collections import deque
 from queue import Queue
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import rclpy
 import rclpy.executors
@@ -19,10 +21,11 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 
 from .config import PolicyConfig, ROSFeatureConfig, load_toml_dict, parse_config
 from .core import RosFeaturePublisher
+from .core.frame_assembler import FrameAssembler
 from .ros_torch_utils import BaseTopic, prepare_frame
 from .subscriber import Ros2Feature
 
@@ -80,9 +83,21 @@ class PolicyController:
 
         self.predict_thread = threading.Thread(target=self.predict_loop, daemon=True)
 
-        self.timings = {
-            "predict": [],
+        # When benchmark=True actions are published under "benchmark/<topic>" so
+        # the robot never moves; detailed per-inference timing is collected and
+        # published on policy_control/metrics as JSON.
+        self.benchmark = (
+            node.declare_parameter("benchmark", False)
+            .get_parameter_value()
+            .bool_value
+        )
+
+        self.timings: Dict[str, List[float]] = {
+            "preprocess": [],
+            "inference": [],
+            "postprocess": [],
             "blend": [],
+            "publish": [],
         }
 
         self.policies: Dict[
@@ -130,11 +145,31 @@ class PolicyController:
             PolicyStatus, "policy_control/status", STATUS_QOS
         )
 
+        # Per-inference timing metrics (only published when benchmark=True).
+        self.metrics_pub = (
+            node.create_publisher(String, "policy_control/metrics", 10)
+            if self.benchmark
+            else None
+        )
+        if self.benchmark:
+            node.get_logger().info(
+                "Benchmark mode enabled: actions published under 'benchmark/<topic>', "
+                "zero-filled synthetic observations at configured FPS, "
+                "timing metrics on 'policy_control/metrics'."
+            )
+
         # Action and observation queue
         self.setup_action_topics(config.topics)
 
-        self.convertor.register_frame_callback(self.frame_callback)
-        self.convertor.setup_subscribers()
+        if self.benchmark:
+            # Skip real subscribers; push zero-filled observations at FPS rate instead.
+            self._synthetic_thread = threading.Thread(
+                target=self._synthetic_observation_loop, daemon=True
+            )
+        else:
+            self._synthetic_thread = None
+            self.convertor.register_frame_callback(self.frame_callback)
+            self.convertor.setup_subscribers()
 
         self.publisher_thread = threading.Thread(target=self.publisher_loop, daemon=True)
 
@@ -158,7 +193,11 @@ class PolicyController:
         self.publisher_thread.start()
         self.predict_thread.start()
 
-        self.convertor.running = True
+        if self._synthetic_thread is not None:
+            self._synthetic_thread.start()
+        else:
+            self.convertor.running = True
+
         self.publish_status()
 
     # ------------------------------------------------------------------
@@ -318,7 +357,9 @@ class PolicyController:
             self.load_policy(name, policy_config)
 
     def setup_action_topics(self, topics: Dict[str, BaseTopic]):
-        self.action_publisher = RosFeaturePublisher(self.node, topics)
+        self.action_publisher = RosFeaturePublisher(
+            self.node, topics, topic_prefix="benchmark" if self.benchmark else ""
+        )
 
     def load_policy(self, task, config: PolicyConfig):
         policy_config = PreTrainedConfig.from_pretrained(
@@ -330,8 +371,19 @@ class PolicyController:
         for key, value in config.policy_config.items():
             setattr(policy_config, key, value)
 
-        dataset = LeRobotDataset(config.ds_repo_id, config.ds_root)
-        ds_meta = dataset.meta
+        if config.ds_repo_id:
+            dataset = LeRobotDataset(config.ds_repo_id, config.ds_root)
+            ds_meta = dataset.meta
+        else:
+            # No dataset configured: derive input/output features from the TOML
+            # topic config so the policy can be instantiated for benchmarking
+            # without a recorded dataset.
+            features = FrameAssembler(self.config.topics).get_feature_description()
+            ds_meta = types.SimpleNamespace(features=features, stats=None)
+            self.node.get_logger().info(
+                f"No ds_repo_id for policy '{task}'; using TOML config features."
+            )
+
         policy = make_policy(
             policy_config,
             ds_meta=ds_meta,
@@ -368,6 +420,22 @@ class PolicyController:
     # ------------------------------------------------------------------
     # Worker loops
     # ------------------------------------------------------------------
+
+    def _synthetic_observation_loop(self):
+        """Push zero-filled observations at FPS rate (benchmark mode only)."""
+        assembler = FrameAssembler(self.config.topics)
+        delta_t = 1.0 / self.config.fps
+        next_tick = time.time() + delta_t
+        while True:
+            now = time.time()
+            # assemble() with an empty dict returns zero tensors for every topic
+            observation = assembler.assemble({})
+            observation["task"] = self._current_task or ""
+            observation["robot_type"] = self.config.robot_type
+            if self.has_active_policy and self.collect_frames:
+                self.observation_queue.put((observation, now))
+            time.sleep(max(0.0, next_tick - time.time()))
+            next_tick += delta_t
 
     def frame_callback(self, observation, t):
         if not self.has_active_policy or not self.collect_frames:
@@ -406,18 +474,35 @@ class PolicyController:
             if remaining_actions > config.action_queue_size:
                 continue
 
-            # Populate action queue if below desired size
+            # Populate action queue if below desired size.
+            # When benchmarking on CUDA, synchronize before each timing point so
+            # that async GPU kernels are fully counted in the measured window.
+            is_cuda = config.device.startswith("cuda")
+
+            def _sync():
+                if self.benchmark and is_cuda:
+                    torch.cuda.synchronize()
+
+            _sync()
             t0 = time.time()
 
             with torch.inference_mode():
                 observation = pre(observation)
+            _sync()
+            t1 = time.time()
+
+            with torch.inference_mode():
                 action_chunk = policy.predict_action_chunk(observation)
+            _sync()
+            t2 = time.time()
+
+            with torch.inference_mode():
                 # Postprocess the entire action chunk at once on the target device
                 action_chunk = post(action_chunk)
                 # Squeeze the batch dimension and move to CPU in a single step
                 actions = action_chunk.squeeze(0).to("cpu")
-
-            t1 = time.time()
+            _sync()
+            t3 = time.time()
 
             passed_actions = remaining_actions - len(self.action_queue)
             old_actions = deque(self.action_queue)
@@ -431,10 +516,33 @@ class PolicyController:
 
                 self.action_queue.append((action, t))
                 t += delta_t
-            t2 = time.time()
+            t4 = time.time()
 
-            self.timings["predict"].append(t1 - t0)
-            self.timings["blend"].append(t2 - t1)
+            preprocess_ms = (t1 - t0) * 1e3
+            inference_ms = (t2 - t1) * 1e3
+            postprocess_ms = (t3 - t2) * 1e3
+            blend_ms = (t4 - t3) * 1e3
+
+            self.timings["preprocess"].append(preprocess_ms)
+            self.timings["inference"].append(inference_ms)
+            self.timings["postprocess"].append(postprocess_ms)
+            self.timings["blend"].append(blend_ms)
+
+            if self.benchmark and self.metrics_pub is not None:
+                msg = String()
+                msg.data = json.dumps({
+                    "type": "inference",
+                    "policy": self.active_policy_name or "",
+                    "preprocess_ms": round(preprocess_ms, 3),
+                    "inference_ms": round(inference_ms, 3),
+                    "postprocess_ms": round(postprocess_ms, 3),
+                    "blend_ms": round(blend_ms, 3),
+                    "total_ms": round((t4 - t0) * 1e3, 3),
+                    "queue_depth": remaining_actions,
+                    "chunk_size": len(actions),
+                    "timestamp": t0,
+                })
+                self.metrics_pub.publish(msg)
 
     def publisher_loop(self):
         delta_t = 1.0 / self.config.fps
@@ -500,7 +608,22 @@ class PolicyController:
                 continue
 
             action, t = self.action_queue.popleft()
+            t_pub0 = time.time()
             self.action_publisher.publish(action)
+            t_pub1 = time.time()
+
+            if self.benchmark:
+                pub_ms = (t_pub1 - t_pub0) * 1e3
+                self.timings["publish"].append(pub_ms)
+                if self.metrics_pub is not None:
+                    msg = String()
+                    msg.data = json.dumps({
+                        "type": "publish",
+                        "policy": self.active_policy_name or "",
+                        "publish_ms": round(pub_ms, 3),
+                        "timestamp": t_pub0,
+                    })
+                    self.metrics_pub.publish(msg)
 
             time.sleep(max(0, next_iter - time.time()))
 
@@ -551,13 +674,28 @@ class PolicyController:
         return self.config.policies[self.active_policy_name]
 
     def cleanup(self):
-        if self.timings and self.timings["predict"]:
-            avg_predict = sum(self.timings["predict"]) / len(self.timings["predict"])
-            avg_blend = sum(self.timings["blend"]) / len(self.timings["blend"])
-            self.node.get_logger().info(
-                f"Average predict time: {avg_predict:.6f} seconds"
-            )
-            self.node.get_logger().info(f"Average blend time: {avg_blend:.6f} seconds")
+        def _stats(values):
+            if not values:
+                return None
+            n = len(values)
+            avg = sum(values) / n
+            mn = min(values)
+            mx = max(values)
+            sorted_v = sorted(values)
+            p50 = sorted_v[n // 2]
+            p95 = sorted_v[int(n * 0.95)]
+            p99 = sorted_v[int(n * 0.99)]
+            return {"n": n, "avg": avg, "min": mn, "max": mx, "p50": p50, "p95": p95, "p99": p99}
+
+        keys = ["preprocess", "inference", "postprocess", "blend", "publish"]
+        for key in keys:
+            s = _stats(self.timings.get(key, []))
+            if s:
+                self.node.get_logger().info(
+                    f"[benchmark] {key:>12}: n={s['n']}  avg={s['avg']:.2f}ms  "
+                    f"min={s['min']:.2f}ms  p50={s['p50']:.2f}ms  "
+                    f"p95={s['p95']:.2f}ms  p99={s['p99']:.2f}ms  max={s['max']:.2f}ms"
+                )
 
 
 def main():

@@ -24,7 +24,7 @@ class PolicyConfig:
         self,
         pretrained_name_or_path: str,
         device: str,
-        ds_repo_id: str,
+        ds_repo_id: Optional[str] = None,
         ds_root: Optional[str] = None,
         progress_model: str | None = None,
         rename_map: Optional[Dict[str, str]] = None,
@@ -81,6 +81,7 @@ class ROSFeatureConfig:
     policies: Dict[str, PolicyConfig] = field(default_factory=dict)
 
     robot_type: str = ""
+    human_intervention_topic: Optional[str] = None
 
     def empty_frame(self) -> Dict[str, List[torch.Tensor]]:
         """Create an empty frame with the configured topics."""
@@ -153,4 +154,5 @@ def parse_config(config: dict) -> ROSFeatureConfig:
         visualize=config.get("visualize", False),
         rerun_remote=config.get("rerun_remote", None),
         robot_type=config.get("robot_type", ""),
+        human_intervention_topic=config.get("human_intervention_topic", None),
     )

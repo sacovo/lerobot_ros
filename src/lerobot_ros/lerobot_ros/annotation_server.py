@@ -323,6 +323,7 @@ class AnnotationSegment(BaseModel):
     start_time: float
     end_time: float
     task: str
+    success: typing.Optional[bool] = None  # None means treat as success
 
 class ConvertRequest(BaseModel):
     bag_path: str
@@ -330,6 +331,18 @@ class ConvertRequest(BaseModel):
     repo_id: str
     resume: bool
     annotations: list[AnnotationSegment]
+
+def _resolve_intervention_topic(bag_topic_types: dict, config_intervention_topic: typing.Optional[str]) -> typing.Optional[str]:
+    """Return the bag topic name matching the configured intervention topic, or None."""
+    if not config_intervention_topic:
+        return None
+    norm = config_intervention_topic.strip("/")
+    for bag_topic in bag_topic_types.keys():
+        if bag_topic.strip("/") == norm:
+            return bag_topic
+    print(f"Warning: human_intervention_topic '{config_intervention_topic}' not found in bag.")
+    return None
+
 
 def run_conversion_task(bag_path, config_path, repo_id, resume, annotations):
     global conversion_status
@@ -339,53 +352,69 @@ def run_conversion_task(bag_path, config_path, repo_id, resume, annotations):
     conversion_status["total"] = len(annotations)
     conversion_status["cancel_requested"] = False
     conversion_status["message"] = "Initializing LeRobot Dataset..."
-    
+
     try:
         config = parse_config(load_toml_dict(config_path))
         dataset_name = repo_id
-        
+
         conversion_status["message"] = f"Initializing dataset {dataset_name}..."
         writer = DatasetWriter(dataset_name, config, resume=resume)
         assembler = FrameAssembler(config.topics)
-        
-        storage_id = get_storage_id_from_bag(bag_path)
+
         sorted_ann = sorted(annotations, key=lambda a: a["start_time"])
-        
+
         for idx, ann in enumerate(sorted_ann):
             if conversion_status.get("cancel_requested", False):
                 raise Exception("Cancelled by user")
-                
+
             start_t = float(ann["start_time"])
             end_t = float(ann["end_time"])
             task = ann["task"]
-            
+            # None from the client means the episode succeeded (default)
+            success = ann.get("success", None)
+            if success is None:
+                success = True
+
             conversion_status["progress"] = idx
             conversion_status["message"] = f"Converting episode {idx+1}/{len(sorted_ann)}: '{task}'"
-            
+
             bag_data = setup_bag_reader(bag_path, config_path)
             reader = bag_data["reader"]
             topic_types = bag_data["topic_types"]
             bag_to_config_map = bag_data["bag_to_config_map"]
             start_time_ns = bag_data["start_time_ns"]
-            
+
+            intervention_bag_topic = _resolve_intervention_topic(topic_types, config.human_intervention_topic)
+
             start_ts_ns = start_time_ns + int(start_t * 1e9)
             seek_ts_ns = max(start_time_ns, start_ts_ns - int(1.0 * 1e9))
             reader.seek(seek_ts_ns)
-            
+
             latest_msgs = {}
+            latest_intervention = False  # tracks most recent value of intervention topic
             t_next_sample = start_t
             episode_frames = []
-            
+
             while reader.has_next():
                 if conversion_status.get("cancel_requested", False):
                     raise Exception("Cancelled by user")
-                    
+
                 topic_name, data, timestamp = reader.read_next()
                 t_sec = (timestamp - start_time_ns) / 1e9
-                
+
                 if t_sec > end_t:
                     break
-                    
+
+                # Track human intervention signal
+                if intervention_bag_topic and topic_name == intervention_bag_topic:
+                    try:
+                        msg_class = topic_types[topic_name]
+                        msg = deserialize_message(data, msg_class)
+                        val = msg.data if hasattr(msg, "data") else False
+                        latest_intervention = bool(val)
+                    except Exception as e:
+                        print(f"Error reading intervention topic: {e}")
+
                 if topic_name in bag_to_config_map:
                     config_topic = bag_to_config_map[topic_name]
                     topic_converter = config.topics[config_topic]
@@ -396,30 +425,34 @@ def run_conversion_task(bag_path, config_path, repo_id, resume, annotations):
                         latest_msgs[config_topic] = tensor
                     except Exception as e:
                         print(f"Error converting message: {e}")
-                        
+
                 if t_sec >= start_t:
                     while t_sec >= t_next_sample:
                         if t_next_sample <= end_t:
                             frame = assembler.assemble(latest_msgs)
+                            if writer.track_intervention:
+                                frame["intervention"] = torch.tensor([1.0 if latest_intervention else 0.0])
                             episode_frames.append((frame, task, t_next_sample))
                         t_next_sample += 1.0 / config.fps
-                        
+
             while t_next_sample <= end_t:
                 frame = assembler.assemble(latest_msgs)
+                if writer.track_intervention:
+                    frame["intervention"] = torch.tensor([0.0])
                 episode_frames.append((frame, task, t_next_sample))
                 t_next_sample += 1.0 / config.fps
-                
+
             if len(episode_frames) > 0:
-                writer.save_episode(episode_frames, task)
-                
+                writer.save_episode(episode_frames, task, success=success)
+
         conversion_status["message"] = "Finalizing LeRobot Dataset..."
         writer.finalize()
-        
+
         conversion_status["running"] = False
         conversion_status["progress"] = len(annotations)
         conversion_status["state"] = "done"
         conversion_status["message"] = "Dataset created successfully!"
-        
+
     except Exception as e:
         traceback.print_exc()
         conversion_status["running"] = False

@@ -1,16 +1,23 @@
-from typing import Dict, Any
+from typing import Any, Dict
+
 import torch
 from rclpy.node import Node
 from lerobot_ros.convert.base import BaseTopic
 from lerobot_ros.ros_torch_utils import TensorToRosConverter
 
 class RosFeaturePublisher:
-    def __init__(self, node: Node, topics: Dict[str, BaseTopic]):
+    def __init__(self, node: Node, topics: Dict[str, BaseTopic], topic_prefix: str = ""):
         self.node = node
         self.topics = topics
-        # Only publish topics tagged as 'action' or 'meta'
+        # Only publish topics tagged as 'action' or 'meta'.
+        # When topic_prefix is set (e.g. "benchmark"), actions are published under
+        # that namespace so they don't actuate the real robot.
         self.publishers = {
-            name: node.create_publisher(topic.msg_type(), name, 10)
+            name: node.create_publisher(
+                topic.msg_type(),
+                f"{topic_prefix}/{name}" if topic_prefix else name,
+                10,
+            )
             for name, topic in topics.items() if topic.is_action or topic.is_meta
         }
         self.converter = TensorToRosConverter(topics)
