@@ -27,7 +27,7 @@ setup(
         "console_scripts": [
             "policy_controller = lerobot_ros.policy_controller:main",
             "dataset_recorder = lerobot_ros.recorder:main",
-            "episode_tracker = lerobot_ros.episode_tracker_node:main",
+            "train_episode_tracker = lerobot_ros.episode_tracker:main",
             "so101_leader = lerobot_ros.so101.leader:main",
             "so101_follower = lerobot_ros.so101.follower:main",
             "replay = lerobot_ros.replay:main",

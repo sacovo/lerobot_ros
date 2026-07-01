@@ -17,7 +17,7 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.processor.pipeline import DataProcessorPipeline
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot_interfaces.action import RunPolicy
-from lerobot_interfaces.msg import PolicyStatus, TaskProgress
+from lerobot_interfaces.msg import PolicyStatus
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
@@ -27,6 +27,7 @@ from std_msgs.msg import Empty, String
 from .config import PolicyConfig, ROSFeatureConfig, load_toml_dict, parse_config
 from .core import RosFeaturePublisher
 from .core.frame_assembler import FrameAssembler
+from .episode_tracker import EpisodeTracker, stack_progress_window
 from .ros_torch_utils import BaseTopic, prepare_frame
 from .subscriber import Ros2Feature
 
@@ -105,6 +106,12 @@ class PolicyController:
             str, Tuple[DataProcessorPipeline, PreTrainedPolicy, DataProcessorPipeline]
         ] = {}
 
+        # Progress estimators (optional, per policy) and their rolling frame
+        # history, loaded in-process here instead of via a separate node/topic
+        # so the estimator in use can never go stale relative to the active policy.
+        self.progress_models: Dict[str, EpisodeTracker] = {}
+        self.progress_windows: Dict[str, deque] = {}
+
         # Parameters
         self.task_completion_threshold = (
             node.declare_parameter("task_completion_threshold", 0.9)
@@ -134,11 +141,6 @@ class PolicyController:
         # Safety heartbeat: autonomy only publishes while this is refreshed.
         self.heartbeat_sub = node.create_subscription(
             Empty, "policy_control/heartbeat", self.heartbeat_callback, HEARTBEAT_QOS
-        )
-
-        # Progress regressor feedback (optional, per policy).
-        self.progress_subscriber = node.create_subscription(
-            TaskProgress, "episode_progress", self.progress_callback, 10
         )
 
         # Latched status topic for operators / GUIs.
@@ -211,6 +213,8 @@ class PolicyController:
             self.active_policy_name = policy_name  # setter validates + weights
             self._current_task = task
             self._latest_progress = 0.0
+            if policy_name in self.progress_windows:
+                self.progress_windows[policy_name].clear()
             self.action_queue.clear()
             self.collect_frames = True
             self.running = True
@@ -256,11 +260,6 @@ class PolicyController:
         msg.progress = float(self._latest_progress)
         msg.heartbeat_alive = self._heartbeat_alive()
         self.status_pub.publish(msg)
-
-    def progress_callback(self, msg: TaskProgress):
-        if msg.policy_name != self.active_policy_name:
-            return
-        self._latest_progress = msg.progress
 
     # ------------------------------------------------------------------
     # Action server
@@ -426,6 +425,16 @@ class PolicyController:
 
         self.policies[task] = (preprocessor, policy, postprocessor)
 
+        if config.progress_model is not None:
+            progress_model = EpisodeTracker.from_pretrained(config.progress_model)
+            progress_model.eval()
+            progress_model = progress_model.to(config.device)
+            self.progress_models[task] = progress_model
+            self.progress_windows[task] = deque(maxlen=progress_model.window)
+            self.node.get_logger().info(
+                f"Loaded progress model '{config.progress_model}' for policy '{task}'"
+            )
+
     # ------------------------------------------------------------------
     # Worker loops
     # ------------------------------------------------------------------
@@ -477,6 +486,19 @@ class PolicyController:
             # Batch and preprocess the observation on the target device
             with torch.inference_mode():
                 observation = prepare_frame(observation, config.device)
+
+            progress_model = self.progress_models.get(self.active_policy_name)
+            if progress_model is not None:
+                with torch.inference_mode():
+                    progress_frame = {
+                        key: observation[key]
+                        for key in progress_model.progress_keys
+                        if key in observation
+                    }
+                    window = self.progress_windows[self.active_policy_name]
+                    window.append(progress_frame)
+                    windowed = stack_progress_window(window, progress_model.window)
+                    self._latest_progress = progress_model.predict_progress(windowed).item()
 
             remaining_actions = len(self.action_queue)
 
