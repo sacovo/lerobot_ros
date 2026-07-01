@@ -423,6 +423,15 @@ class PolicyController:
         if hasattr(postprocessor, "to"):
             postprocessor = postprocessor.to(config.device)
 
+        if config.use_trt:
+            self.node.get_logger().info(f"Loading TRT policy for '{task}' from {config.trt_engine_dir}")
+            from .trt.policy import load_trt_policy
+            policy = load_trt_policy(
+                policy,
+                config.trt_engine_dir,
+                device=config.device,
+            )
+
         self.policies[task] = (preprocessor, policy, postprocessor)
 
         if config.progress_model is not None:

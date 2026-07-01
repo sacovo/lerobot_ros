@@ -33,6 +33,9 @@ class PolicyConfig:
         action_smoothing_beta: float = 1.0,
         max_episode_length_s: Optional[float] = None,
         autocast: bool = False,
+        use_trt: bool = False,
+        trt_engine_dir: Optional[str] = None,
+        trt_fp16: bool = True,
     ):
         self.pretrained_name_or_path = pretrained_name_or_path
         self.device = device
@@ -45,6 +48,9 @@ class PolicyConfig:
         self.progress_model = progress_model
         self.max_episode_length_s = max_episode_length_s
         self.autocast = autocast
+        self.use_trt = use_trt
+        self.trt_engine_dir = trt_engine_dir
+        self.trt_fp16 = trt_fp16
 
 
 def load_qos(params):
