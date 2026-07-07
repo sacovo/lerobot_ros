@@ -48,8 +48,7 @@ def main():
 
     # 2. Write rebuild_on_device.sh
     sh_path = os.path.join(temp_dir, "rebuild_on_device.sh")
-    fp16_flag = "--fp16" if args.fp16 else ""
-    
+
     with open(sh_path, "w") as f:
         f.write("#!/bin/bash\n")
         f.write("set -e\n")
@@ -72,52 +71,25 @@ def main():
     os.chmod(sh_path, 0o755)
 
     # 3. Write rebuild_on_device.py (Python API builder fallback)
+    #
+    # Builds via lerobot_ros.trt.engine.build_trt_engine (the canonical
+    # implementation) rather than re-implementing engine building here, so the
+    # device rebuild path can't drift out of sync with it again -- an earlier,
+    # duplicated version of this script silently produced FP32 engines on
+    # TRT 11+ (no STRONGLY_TYPED/FP16-ONNX fallback). Requires lerobot_ros to
+    # be importable on-device, which holds since the Jetson image bakes the
+    # full ROS workspace.
     py_path = os.path.join(temp_dir, "rebuild_on_device.py")
     with open(py_path, "w") as f:
         f.write('''import os
-import sys
-import tensorrt as trt
-
-def build_engine(onnx_path, engine_path, fp16=True):
-    logger = trt.Logger(trt.Logger.WARNING)
-    builder = trt.Builder(logger)
-    
-    # 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH) = 1
-    network = builder.create_network(1)
-    parser = trt.OnnxParser(network, logger)
-    
-    if not parser.parse_from_file(onnx_path):
-        for i in range(parser.num_errors):
-            print(f"ONNX parse error: {parser.get_error(i)}")
-        raise RuntimeError(f"Failed to parse ONNX: {onnx_path}")
-        
-    config = builder.create_builder_config()
-    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30) # 2 GiB
-    
-    # Enable FP16 if selected and supported (checking version-agnostic attributes)
-    if fp16:
-        fp16_flag = getattr(trt.BuilderFlag, "FP16", None)
-        if fp16_flag is not None:
-            config.set_flag(fp16_flag)
-            print("Enabled FP16 builder flag.")
-        else:
-            print("Note: FP16 BuilderFlag is not explicitly supported or exposed on this TRT version (common in TRT 11+).")
-            
-    print(f"Building serialized network for {onnx_path}...")
-    serialized = builder.build_serialized_network(network, config)
-    if serialized is None:
-        raise RuntimeError("Failed to build serialized network")
-        
-    with open(engine_path, "wb") as f:
-        f.write(serialized)
-    print(f"Engine saved to {engine_path}")
+from lerobot_ros.trt.engine import build_trt_engine
 
 def main():
     fp16 = ''' + str(args.fp16) + '''
     onnx_files = ''' + str(onnx_files) + '''
     for onnx in onnx_files:
         base = os.path.splitext(onnx)[0]
-        build_engine(onnx, f"{base}.trt", fp16=fp16)
+        build_trt_engine(onnx, f"{base}.trt", fp16=fp16)
 
 if __name__ == "__main__":
     main()
