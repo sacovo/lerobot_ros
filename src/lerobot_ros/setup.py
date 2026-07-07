@@ -16,7 +16,7 @@ setup(
     zip_safe=False,
     maintainer="Sandro Covo",
     maintainer_email="sandro@sandrocovo.ch",
-    description="TODO: Package description",
+    description="ROS 2 bridge for LeRobot policies: policy controller, dataset recording, bag-to-dataset conversion, the annotation web UI, and TensorRT engine export/packaging.",
     license="MIT",
     extras_require={
         "test": [

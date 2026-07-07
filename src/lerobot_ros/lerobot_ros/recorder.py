@@ -367,8 +367,6 @@ def main():
     node.get_logger().info(f"Loaded config from {config_path}")
     node.get_logger().info(f"Config: {config}")
 
-    # node.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
-
     recorder = Recorder(node, config, subscriber_node)
 
     executor.add_node(subscriber_node)

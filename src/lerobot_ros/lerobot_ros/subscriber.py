@@ -51,9 +51,6 @@ class Ros2Feature:
         self.subscribers = {}
         self.fps = fps
 
-        self.t_queue: Queue[float] = Queue(maxsize=100)
-        self.t_thread = threading.Thread(target=self.write_timestamps, daemon=True)
-
         # Use Rust collector if available and requested
         self.use_rust_collector = use_rust_collector and HAS_RUST_COLLECTOR
 
@@ -64,7 +61,6 @@ class Ros2Feature:
                 "Rust FrameCollector not available, falling back to Python timer."
             )
             self._init_python_collector()
-        self.t_thread.start()
 
     def _init_rust_collector(self):
         """Initialize Rust-based frame collector for precise timing."""
@@ -221,16 +217,6 @@ class Ros2Feature:
             self.frame = self.new_frame(frame)
             self.proc_queue.put((frame, now))
 
-    def write_timestamps(self):
-        while self.running:
-            try:
-                t = self.t_queue.get(timeout=1.0)
-            except QueueEmpty:
-                continue
-            with open("timestamps.txt", "a") as f:
-                f.write(f"{t}\n")
-            self.t_queue.task_done()
-
     def _process_loop(self):
         while self.running:
             try:
@@ -254,8 +240,6 @@ class Ros2Feature:
 
             if self.frame_callback:
                 self.frame_callback(converted_frame, t)
-
-            self.t_queue.put(t)
 
             self.proc_queue.task_done()
 

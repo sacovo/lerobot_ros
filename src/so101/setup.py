@@ -18,8 +18,8 @@ setup(
     zip_safe=True,
     maintainer="ros",
     maintainer_email="sandro@sandrocovo.ch",
-    description="TODO: Package description",
-    license="TODO: License declaration",
+    description="ROS 2 leader/follower nodes for teleoperating and recording joint states from the SO-101 robot arm.",
+    license="MIT",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [

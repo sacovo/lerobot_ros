@@ -92,7 +92,7 @@ class ROSSO101Follower:
         msg.name = list([key.replace(".pos", "") for key in observation.keys()])
         msg.position = list(observation.values())
 
-        self.node.get_logger().info(f"Publishing joint states: {msg}")
+        self.node.get_logger().debug(f"Publishing joint states: {msg}")
         self.joint_state_publisher.publish(msg)
 
     def joint_state_callback(self, msg: JointState):
