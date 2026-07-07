@@ -231,7 +231,15 @@ class PolicyController:
             )
 
     def _stop(self, reason: str = ""):
-        """Stop execution and flush queued actions so resume cannot replay them."""
+        """Stop execution and flush queued actions so resume cannot replay them.
+
+        Deliberately does not publish a terminal/zero command: actions here are
+        joint positions (see /position_controller/commands), so a sudden zero
+        would command an aggressive jump-to-origin rather than a safe stop.
+        Setting self.running = False is enough -- publisher_loop then simply
+        stops publishing (see its "not self.running" branch), which leaves the
+        position controller holding the last commanded position.
+        """
         with self._state_lock:
             self.running = False
             self.collect_frames = False

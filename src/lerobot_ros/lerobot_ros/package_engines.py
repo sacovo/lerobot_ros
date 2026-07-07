@@ -46,39 +46,17 @@ def main():
         shutil.rmtree(temp_dir)
         sys.exit(1)
 
-    # 2. Write rebuild_on_device.sh
-    sh_path = os.path.join(temp_dir, "rebuild_on_device.sh")
-
-    with open(sh_path, "w") as f:
-        f.write("#!/bin/bash\n")
-        f.write("set -e\n")
-        f.write("echo '==============================================='\n")
-        f.write("echo 'Rebuilding TensorRT engines on target device...'\n")
-        f.write("echo '==============================================='\n\n")
-        for onnx_file in onnx_files:
-            base = os.path.splitext(onnx_file)[0]
-            trt_file = f"{base}.trt"
-            f.write(f"if [ -f \"{onnx_file}\" ]; then\n")
-            f.write(f"    echo 'Compiling {onnx_file} -> {trt_file}...'\n")
-            # Use trtexec as it is standard on Jetson
-            trtexec_cmd = f"    trtexec --onnx={onnx_file} --saveEngine={trt_file} --workspace=2048"
-            if args.fp16:
-                trtexec_cmd += " --fp16"
-            f.write(trtexec_cmd + "\n")
-            f.write("fi\n\n")
-        f.write("echo 'All engines compiled successfully!'\n")
-
-    os.chmod(sh_path, 0o755)
-
-    # 3. Write rebuild_on_device.py (Python API builder fallback)
+    # 2. Write rebuild_on_device.py
     #
-    # Builds via lerobot_ros.trt.engine.build_trt_engine (the canonical
-    # implementation) rather than re-implementing engine building here, so the
-    # device rebuild path can't drift out of sync with it again -- an earlier,
-    # duplicated version of this script silently produced FP32 engines on
-    # TRT 11+ (no STRONGLY_TYPED/FP16-ONNX fallback). Requires lerobot_ros to
-    # be importable on-device, which holds since the Jetson image bakes the
-    # full ROS workspace.
+    # This is the only rebuild script generated (a trtexec-based .sh used to
+    # be generated alongside it, but trtexec can silently produce an FP32
+    # engine on TensorRT 11+ even when --fp16 is requested, since it can't do
+    # the STRONGLY_TYPED/FP16-ONNX fallback TRT 11+ needs). Builds via
+    # lerobot_ros.trt.engine.build_trt_engine (the canonical implementation,
+    # which does have that fallback) rather than re-implementing engine
+    # building here, so the device rebuild path can't drift out of sync again.
+    # Requires lerobot_ros to be importable on-device, which holds since the
+    # Jetson image bakes the full ROS workspace.
     py_path = os.path.join(temp_dir, "rebuild_on_device.py")
     with open(py_path, "w") as f:
         f.write('''import os
@@ -95,7 +73,7 @@ if __name__ == "__main__":
     main()
 ''')
 
-    # 4. Generate the config TOML snippet
+    # 3. Generate the config TOML snippet
     #
     # episode_tracker.onnx is the fixed filename convert_policy.py's
     # episode_tracker mode exports (see convert_episode_tracker). Its TRT
