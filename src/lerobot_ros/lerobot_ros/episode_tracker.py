@@ -10,7 +10,7 @@ from huggingface_hub import PyTorchModelHubMixin
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.utils.constants import ACTION, OBS_STATE
 from torch import nn
-from torch.utils.data import Dataset, Subset
+from torch.utils.data import Dataset
 from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
 # Configure logging
@@ -196,54 +196,6 @@ class WindowedProgressDataset(Dataset):
             else:
                 windowed[key] = value
         return windowed
-
-
-def create_train_val_split(
-    dataset: LeRobotDataset, val_split: float = 0.1, seed: int = 42
-):
-    """Create train/val split by splitting episodes, not individual frames.
-
-    This ensures frames from the same episode don't leak between train and val.
-    """
-    logger.info(f"Creating train/val split with {val_split * 100:.1f}% validation data")
-
-    # Get episode information
-    episodes = dataset.meta.episodes
-    n_episodes = len(episodes)
-
-    # Create episode indices and shuffle them
-    episode_indices = list(range(n_episodes))
-    torch.manual_seed(seed)
-    episode_indices = torch.randperm(n_episodes).tolist()
-
-    # Split episodes
-    n_val_episodes = max(1, int(n_episodes * val_split))
-    val_episode_indices = set(episode_indices[:n_val_episodes])
-    train_episode_indices = set(episode_indices[n_val_episodes:])
-
-    logger.info(
-        f"Split: {len(train_episode_indices)} train episodes, {len(val_episode_indices)} val episodes"
-    )
-
-    # Get frame indices for each split
-    train_indices = []
-    val_indices = []
-
-    for idx in range(len(dataset)):
-        # Get episode index for this frame
-        episode_idx = dataset.episode_data_index["episode_index"][idx].item()
-
-        if episode_idx in train_episode_indices:
-            train_indices.append(idx)
-        else:
-            val_indices.append(idx)
-
-    logger.info(f"Train samples: {len(train_indices)}, Val samples: {len(val_indices)}")
-
-    train_dataset = Subset(dataset, train_indices)
-    val_dataset = Subset(dataset, val_indices)
-
-    return train_dataset, val_dataset
 
 
 def progress_targets(batch, episode_lengths, device):
