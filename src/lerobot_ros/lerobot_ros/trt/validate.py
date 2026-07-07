@@ -84,5 +84,59 @@ def validate_policy_accuracy(policy_pt, policy_trt, dataset_repo_id, dataset_roo
     print(f"PyTorch action std:  {all_pt.std(0).tolist()}")
     print(f"TRT action std:      {all_trt.std(0).tolist()}")
     print("---------------------------------\n")
-    
+
     return max_abs, mean_abs, max_rel
+
+def validate_episode_tracker_accuracy(model_pt, model_trt, windowed_dataset, num_samples=50):
+    """
+    Validates accuracy of an EpisodeTracker TRT engine against the eager
+    PyTorch reference over num_samples windows from windowed_dataset (a
+    Dataset yielding single windowed frames, each value shaped (K, ...) --
+    e.g. episode_tracker.WindowedProgressDataset). Prints stats and returns
+    (max_abs_error, mean_abs_error) on predicted progress in [0, 1].
+
+    Takes an already-constructed windowed_dataset rather than a dataset repo
+    ID (unlike validate_policy_accuracy) so this module doesn't need to
+    import episode_tracker.py's windowing helpers itself -- the trt/ package
+    is sometimes imported as a flat top-level package (see convert_policy.py's
+    sys.path hack), where a relative import reaching up into the parent
+    lerobot_ros package would break.
+    """
+    device = next(model_pt.parameters()).device
+    indices = [i * (len(windowed_dataset) // num_samples) for i in range(num_samples)]
+    print(f"Evaluating {num_samples} samples...")
+
+    model_pt.eval()
+
+    pt_progress = []
+    trt_progress = []
+
+    for idx in indices:
+        window = windowed_dataset[idx]
+        batch = {
+            k: v.unsqueeze(0).to(device) if isinstance(v, torch.Tensor) else v
+            for k, v in window.items()
+        }
+
+        with torch.no_grad():
+            progress_pt = model_pt.predict_progress(batch)
+            progress_trt = model_trt.predict_progress(batch)
+
+        pt_progress.append(progress_pt.cpu())
+        trt_progress.append(progress_trt.cpu())
+
+    all_pt = torch.cat(pt_progress)
+    all_trt = torch.cat(trt_progress)
+    abs_err = (all_pt - all_trt).abs()
+
+    max_abs = abs_err.max().item()
+    mean_abs = abs_err.mean().item()
+
+    print("\n--- EpisodeTracker Accuracy Validation Report ---")
+    print(f"Max absolute error:  {max_abs:.6f}")
+    print(f"Mean absolute error: {mean_abs:.6f}")
+    print(f"PyTorch progress mean/std: {all_pt.mean().item():.4f} / {all_pt.std().item():.4f}")
+    print(f"TRT progress mean/std:     {all_trt.mean().item():.4f} / {all_trt.std().item():.4f}")
+    print("--------------------------------------------------\n")
+
+    return max_abs, mean_abs

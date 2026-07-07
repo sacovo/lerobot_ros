@@ -19,21 +19,63 @@ def export_act(policy, sample_observation, output_path):
     """
     obs_keys = sorted(list(sample_observation.keys()))
     wrapper = PolicyONNXWrapper(policy, obs_keys)
-    
+
     device = next(policy.parameters()).device
     wrapper.eval().to(device)
 
     dummy_tensors = tuple(sample_observation[k] for k in obs_keys)
-    
+
     print(f"Exporting ACT ONNX to {output_path}...")
     print(f"Input keys: {obs_keys}")
-    
+
     torch.onnx.export(
         wrapper,
         dummy_tensors,
         output_path,
         input_names=obs_keys,
         output_names=["action_chunk"],
+        opset_version=18,
+    )
+    print("Export complete.")
+
+class EpisodeTrackerONNXWrapper(nn.Module):
+    def __init__(self, model, progress_keys):
+        super().__init__()
+        self.model = model
+        self.progress_keys = progress_keys
+
+    def forward(self, *tensors):
+        batch = dict(zip(self.progress_keys, tensors))
+        return self.model(batch)
+
+def export_episode_tracker(model, sample_batch, output_path):
+    """
+    Exports an EpisodeTracker progress-regressor model to ONNX.
+
+    sample_batch must be a *windowed* batch (each value shaped (B, K, ...),
+    e.g. from stack_progress_window()) with exactly model.progress_keys as
+    keys. The exported graph outputs raw per-bin logits (pre-softmax); the
+    HL-Gauss softmax + bin_centers weighting stays on the Python side (see
+    EpisodeTrackerTRTPolicy.predict_progress), the same way the eager
+    EpisodeTracker.predict_progress() wraps EpisodeTracker.forward().
+    """
+    progress_keys = model.progress_keys
+    wrapper = EpisodeTrackerONNXWrapper(model, progress_keys)
+
+    device = next(model.parameters()).device
+    wrapper.eval().to(device)
+
+    dummy_tensors = tuple(sample_batch[k] for k in progress_keys)
+
+    print(f"Exporting EpisodeTracker ONNX to {output_path}...")
+    print(f"Input keys: {progress_keys}")
+
+    torch.onnx.export(
+        wrapper,
+        dummy_tensors,
+        output_path,
+        input_names=progress_keys,
+        output_names=["logits"],
         opset_version=18,
     )
     print("Export complete.")

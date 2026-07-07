@@ -1,5 +1,6 @@
 import contextlib
 import json
+import os
 import threading
 import time
 import types
@@ -438,6 +439,15 @@ class PolicyController:
             progress_model = EpisodeTracker.from_pretrained(config.progress_model)
             progress_model.eval()
             progress_model = progress_model.to(config.device)
+
+            if config.progress_model_use_trt:
+                self.node.get_logger().info(
+                    f"Loading TRT progress model for '{task}' from {config.progress_model_trt_engine_dir}"
+                )
+                from .trt.policy import EpisodeTrackerTRTPolicy
+                engine_path = os.path.join(config.progress_model_trt_engine_dir, "episode_tracker.trt")
+                progress_model = EpisodeTrackerTRTPolicy(engine_path, progress_model)
+
             self.progress_models[task] = progress_model
             self.progress_windows[task] = deque(maxlen=progress_model.window)
             self.node.get_logger().info(

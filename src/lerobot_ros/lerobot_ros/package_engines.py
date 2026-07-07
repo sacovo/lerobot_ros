@@ -96,15 +96,29 @@ if __name__ == "__main__":
 ''')
 
     # 4. Generate the config TOML snippet
+    #
+    # episode_tracker.onnx is the fixed filename convert_policy.py's
+    # episode_tracker mode exports (see convert_episode_tracker). Its TRT
+    # engine is loaded as a policy's *progress model*, not as the policy
+    # itself, so it needs the progress_model_* keys nested inside the
+    # policy's own [policies.<name>] block rather than a use_trt/
+    # trt_engine_dir snippet of its own.
+    is_episode_tracker = "episode_tracker.onnx" in onnx_files
     toml_path = os.path.join(temp_dir, "config_snippet.toml")
     with open(toml_path, "w") as f:
-        f.write("# Add the following lines to your policy configuration TOML file:\n")
-        f.write(f"[policies.{policy_name}]\n")
-        f.write("pretrained_name_or_path = \"/path/to/original_pytorch_checkpoint\"\n")
-        f.write("device = \"cuda\"\n")
-        f.write("use_trt = true\n")
-        f.write(f"trt_engine_dir = \"/path/to/extracted/engines/{policy_name}\"\n")
-        f.write(f"trt_fp16 = {str(args.fp16).lower()}\n")
+        if is_episode_tracker:
+            f.write("# Add the following lines to the [policies.<name>] block of the policy\n")
+            f.write("# whose progress model this engine belongs to:\n")
+            f.write("progress_model_use_trt = true\n")
+            f.write(f"progress_model_trt_engine_dir = \"/path/to/extracted/engines/{policy_name}\"\n")
+        else:
+            f.write("# Add the following lines to your policy configuration TOML file:\n")
+            f.write(f"[policies.{policy_name}]\n")
+            f.write("pretrained_name_or_path = \"/path/to/original_pytorch_checkpoint\"\n")
+            f.write("device = \"cuda\"\n")
+            f.write("use_trt = true\n")
+            f.write(f"trt_engine_dir = \"/path/to/extracted/engines/{policy_name}\"\n")
+            f.write(f"trt_fp16 = {str(args.fp16).lower()}\n")
 
     # Create the tarball
     print(f"Packaging files into {tarball_path}...")

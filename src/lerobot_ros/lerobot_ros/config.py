@@ -36,6 +36,8 @@ class PolicyConfig:
         use_trt: bool = False,
         trt_engine_dir: Optional[str] = None,
         trt_fp16: bool = True,
+        progress_model_use_trt: bool = False,
+        progress_model_trt_engine_dir: Optional[str] = None,
     ):
         self.pretrained_name_or_path = pretrained_name_or_path
         self.device = device
@@ -51,6 +53,8 @@ class PolicyConfig:
         self.use_trt = use_trt
         self.trt_engine_dir = trt_engine_dir
         self.trt_fp16 = trt_fp16
+        self.progress_model_use_trt = progress_model_use_trt
+        self.progress_model_trt_engine_dir = progress_model_trt_engine_dir
 
 
 def load_qos(params):

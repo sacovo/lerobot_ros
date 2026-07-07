@@ -47,9 +47,41 @@ class ACTTRTPolicy:
                 inputs[name] = observation[name]
             else:
                 raise ValueError(f"Expected observation input '{name}' not found in observation keys: {list(observation.keys())}")
-        
+
         outputs = self.runner.run(inputs)
         return outputs["action_chunk"]
+
+class EpisodeTrackerTRTPolicy:
+    """TRT-accelerated drop-in for episode_tracker.EpisodeTracker at inference time.
+
+    Only wraps the exported forward pass (backbone + GRU + head -> per-bin
+    logits); progress_keys/bin_centers are copied from the original model
+    since the HL-Gauss softmax + weighted-sum post-processing stays in Python
+    (mirrors EpisodeTracker.predict_progress exactly, just calling the TRT
+    engine instead of the eager forward()).
+    """
+    def __init__(self, engine_path: str, original_model):
+        print(f"Loading EpisodeTracker TRT engine from {engine_path}...")
+        self.runner = TRTEngineRunner(engine_path)
+        self.progress_keys = original_model.progress_keys
+        self.bin_centers = original_model.bin_centers
+        self.window = original_model.window
+
+    def forward(self, batch: dict) -> torch.Tensor:
+        inputs = {}
+        for name in self.progress_keys:
+            if name not in batch:
+                raise ValueError(f"Expected progress input '{name}' not found in batch keys: {list(batch.keys())}")
+            inputs[name] = batch[name]
+
+        outputs = self.runner.run(inputs)
+        return outputs["logits"]
+
+    def predict_progress(self, batch: dict) -> torch.Tensor:
+        logits = self.forward(batch)
+        probs = torch.softmax(logits, dim=-1)
+        bin_centers = self.bin_centers.to(probs.device)
+        return (probs * bin_centers.unsqueeze(0)).sum(dim=-1)
 
 class SmolVLATRTPolicy:
     def __init__(self, engine_dir: str, config):
