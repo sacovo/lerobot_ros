@@ -3,14 +3,12 @@ import os
 import sys
 import time
 import base64
-import io
 import typing
 import traceback
 import numpy as np
 import torch
 import cv2
 import yaml
-from PIL import Image as PILImage
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +22,7 @@ from rosidl_runtime_py.utilities import get_message
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.feature_utils import DEFAULT_FEATURES
 from lerobot_ros.config import load_toml_dict, parse_config
-from lerobot_ros.convert.image import ros_image_to_numpy, ImageTopic, ImageCompressedTopic
+from lerobot_ros.convert.image import ros_image_to_numpy, ImageTopic, ImageCompressedTopic, _rotate_expand
 from lerobot_ros.bag_to_dataset import get_storage_id_from_bag
 from lerobot_ros.core import FrameAssembler, DatasetWriter
 
@@ -154,10 +152,12 @@ BAGS_LIST_CACHE = None
 BAGS_LIST_CACHE_TIME = 0
 BAGS_LIST_CACHE_TTL = 5.0 # Cache list_bags for 5 seconds
 
-def pil_to_base64_jpeg(pil_img: PILImage.Image) -> str:
-    buffered = io.BytesIO()
-    pil_img.save(buffered, format="JPEG")
-    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+def bgr_to_base64_jpeg(bgr_img) -> str:
+    """Encode a BGR (OpenCV convention) numpy array as a base64 JPEG data URI."""
+    ok, buffer = cv2.imencode(".jpg", bgr_img)
+    if not ok:
+        raise ValueError("Failed to encode image as JPEG")
+    img_str = base64.b64encode(buffer.tobytes()).decode("utf-8")
     return f"data:image/jpeg;base64,{img_str}"
 
 def ros_message_to_dict(msg):
@@ -293,14 +293,17 @@ def get_frame(path: str = Query(...), time: float = Query(...), config: typing.O
                 msg = deserialize_message(msg_data, msg_class)
                 if isinstance(topic_converter, (ImageTopic, ImageCompressedTopic)):
                     if isinstance(topic_converter, ImageCompressedTopic):
-                        pil_img = PILImage.open(io.BytesIO(msg.data))
+                        np_arr = np.frombuffer(bytes(msg.data), dtype=np.uint8)
+                        bgr_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                        if bgr_img is None:
+                            raise ValueError("Failed to decode compressed image")
                     else:
-                        pil_img = ros_image_to_numpy(msg)
-                        
+                        bgr_img = cv2.cvtColor(ros_image_to_numpy(msg), cv2.COLOR_RGB2BGR)
+
                     if topic_converter.rotate:
-                        pil_img = pil_img.rotate(topic_converter.rotate, expand=True)
-                        
-                    cameras[config_topic_name] = pil_to_base64_jpeg(pil_img)
+                        bgr_img = _rotate_expand(bgr_img, topic_converter.rotate)
+
+                    cameras[config_topic_name] = bgr_to_base64_jpeg(bgr_img)
                 else:
                     telemetry[config_topic_name] = ros_message_to_dict(msg)
             except Exception as e:

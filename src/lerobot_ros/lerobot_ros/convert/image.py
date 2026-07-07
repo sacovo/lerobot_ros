@@ -1,102 +1,9 @@
-from io import BytesIO
-
 import cv2
 import numpy as np
 import torch
-from PIL import Image as PILImage
 from sensor_msgs.msg import CompressedImage, Image
 
 from .base import BaseTopic, prefix_names
-
-
-def ros_image_to_pil(ros_image):
-    """
-    Convert a ROS Image message to a PIL Image, handling row padding.
-    """
-    height = ros_image.height
-    width = ros_image.width
-    encoding = ros_image.encoding
-    is_bigendian = ros_image.is_bigendian
-    step = ros_image.step
-    data = ros_image.data
-
-    # Convert bytes to numpy array
-    if isinstance(data, (list, tuple)):
-        data = bytes(data)
-
-    # Handle different encodings
-    if encoding == "rgb8":
-        # RGB 8-bit with potential padding
-        channels = 3
-        bytes_per_pixel = channels * 1  # 1 byte per channel
-
-        # Reshape considering the step (bytes per row)
-        img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
-
-        # Extract only the actual image data (remove padding)
-        img_array = img_array[:, : width * bytes_per_pixel].reshape(
-            (height, width, channels)
-        )
-        pil_image = PILImage.fromarray(img_array, "RGB")
-
-    elif encoding == "bgr8":
-        # BGR 8-bit with potential padding
-        channels = 3
-        bytes_per_pixel = channels * 1
-
-        img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
-        img_array = img_array[:, : width * bytes_per_pixel].reshape(
-            (height, width, channels)
-        )
-        img_array = img_array[:, :, ::-1]  # BGR to RGB
-        pil_image = PILImage.fromarray(img_array, "RGB")
-
-    elif encoding == "rgba8":
-        # RGBA 8-bit with potential padding
-        channels = 4
-        bytes_per_pixel = channels * 1
-
-        img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
-        img_array = img_array[:, : width * bytes_per_pixel].reshape(
-            (height, width, channels)
-        )
-        pil_image = PILImage.fromarray(img_array, "RGBA")
-
-    elif encoding == "bgra8":
-        # BGRA 8-bit with potential padding
-        channels = 4
-        bytes_per_pixel = channels * 1
-
-        img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
-        img_array = img_array[:, : width * bytes_per_pixel].reshape(
-            (height, width, channels)
-        )
-        img_array = img_array[:, :, [2, 1, 0, 3]]  # BGRA to RGBA
-        pil_image = PILImage.fromarray(img_array, "RGBA")
-
-    elif encoding == "mono8":
-        # Grayscale 8-bit with potential padding
-        bytes_per_pixel = 1
-
-        img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
-        img_array = img_array[:, : width * bytes_per_pixel].reshape((height, width))
-        pil_image = PILImage.fromarray(img_array, "L")
-
-    elif encoding == "mono16":
-        # Grayscale 16-bit with potential padding
-        dtype = ">u2" if is_bigendian else "<u2"
-        bytes_per_pixel = 2
-
-        # For 16-bit data, step should be divided by 2 since we're reading 2-byte values
-        img_array = np.frombuffer(data, dtype=dtype).reshape((height, step // 2))
-        img_array = img_array[:, :width].reshape((height, width))
-        img_array = (img_array / 256).astype(np.uint8)
-        pil_image = PILImage.fromarray(img_array, "L")
-
-    else:
-        raise ValueError(f"Unsupported encoding: {encoding}")
-
-    return pil_image
 
 
 def ros_image_to_numpy(ros_image):
@@ -106,6 +13,7 @@ def ros_image_to_numpy(ros_image):
     height = ros_image.height
     width = ros_image.width
     encoding = ros_image.encoding
+    is_bigendian = ros_image.is_bigendian
     step = ros_image.step
     data = ros_image.data
 
@@ -128,12 +36,52 @@ def ros_image_to_numpy(ros_image):
         img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
         gray_array = img_array[:, :width].reshape((height, width))
         return cv2.cvtColor(gray_array, cv2.COLOR_GRAY2RGB)
+
+    elif encoding == "rgba8":
+        # RGBA 8-bit with potential padding; drop the alpha channel
+        img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
+        img_array = img_array[:, : width * 4].reshape((height, width, 4))
+        return np.ascontiguousarray(img_array[:, :, :3])
+
+    elif encoding == "bgra8":
+        # BGRA 8-bit with potential padding; drop alpha and reorder to RGB
+        img_array = np.frombuffer(data, dtype=np.uint8).reshape((height, step))
+        img_array = img_array[:, : width * 4].reshape((height, width, 4))
+        return np.ascontiguousarray(img_array[:, :, [2, 1, 0]])
+
+    elif encoding == "mono16":
+        # Grayscale 16-bit with potential padding, downshifted to 8-bit then
+        # replicated to RGB (same as the mono8 path above)
+        dtype = ">u2" if is_bigendian else "<u2"
+        # For 16-bit data, step should be divided by 2 since we're reading 2-byte values
+        img_array = np.frombuffer(data, dtype=dtype).reshape((height, step // 2))
+        img_array = img_array[:, :width].reshape((height, width))
+        gray_array = (img_array / 256).astype(np.uint8)
+        return cv2.cvtColor(gray_array, cv2.COLOR_GRAY2RGB)
+
     else:
-        # For other encodings, use the PIL conversion then convert to array
-        pil_image = ros_image_to_pil(ros_image)
-        if pil_image.mode != "RGB":
-            pil_image = pil_image.convert("RGB")
-        return np.array(pil_image)
+        raise ValueError(f"Unsupported encoding: {encoding}")
+
+
+def _rotate_expand(img, angle):
+    """
+    Rotate img (numpy array) by angle degrees, expanding the canvas to fit the
+    whole rotated image -- matching PIL's Image.rotate(angle, expand=True)
+    (both PIL and cv2.getRotationMatrix2D use counter-clockwise positive angles).
+    """
+    h, w = img.shape[:2]
+    cx, cy = w / 2.0, h / 2.0
+    M = cv2.getRotationMatrix2D((cx, cy), angle, 1.0)
+
+    cos = abs(M[0, 0])
+    sin = abs(M[0, 1])
+    new_w = int(round(h * sin + w * cos))
+    new_h = int(round(h * cos + w * sin))
+
+    M[0, 2] += (new_w / 2.0) - cx
+    M[1, 2] += (new_h / 2.0) - cy
+
+    return cv2.warpAffine(img, M, (new_w, new_h), flags=cv2.INTER_NEAREST)
 
 
 class ImageTopic(BaseTopic):
@@ -171,9 +119,7 @@ class ImageTopic(BaseTopic):
             elif rot == 270:
                 img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
             else:
-                pil_image = PILImage.fromarray(img)
-                pil_image = pil_image.rotate(self.rotate, expand=True)
-                img = np.array(pil_image)
+                img = _rotate_expand(img, self.rotate)
 
         if img.shape[1] != self.width or img.shape[0] != self.height:
             img = cv2.resize(
@@ -223,9 +169,7 @@ class ImageCompressedTopic(ImageTopic):
             elif rot == 270:
                 img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
             else:
-                pil_image = PILImage.fromarray(img)
-                pil_image = pil_image.rotate(self.rotate, expand=True)
-                img = np.array(pil_image)
+                img = _rotate_expand(img, self.rotate)
 
         if img.shape[1] != self.width or img.shape[0] != self.height:
             img = cv2.resize(
