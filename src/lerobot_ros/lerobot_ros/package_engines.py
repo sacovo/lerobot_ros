@@ -98,11 +98,11 @@ if __name__ == "__main__":
     # 4. Generate the config TOML snippet
     toml_path = os.path.join(temp_dir, "config_snippet.toml")
     with open(toml_path, "w") as f:
-        f.write(f"# Add the following lines to your policy configuration TOML file:\n")
+        f.write("# Add the following lines to your policy configuration TOML file:\n")
         f.write(f"[policies.{policy_name}]\n")
-        f.write(f"pretrained_name_or_path = \"/path/to/original_pytorch_checkpoint\"\n")
-        f.write(f"device = \"cuda\"\n")
-        f.write(f"use_trt = true\n")
+        f.write("pretrained_name_or_path = \"/path/to/original_pytorch_checkpoint\"\n")
+        f.write("device = \"cuda\"\n")
+        f.write("use_trt = true\n")
         f.write(f"trt_engine_dir = \"/path/to/extracted/engines/{policy_name}\"\n")
         f.write(f"trt_fp16 = {str(args.fp16).lower()}\n")
 

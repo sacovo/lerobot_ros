@@ -195,7 +195,6 @@ def export_smolvla(policy, sample_observation, output_dir):
             patch_embeds = embeddings_module.patch_embedding(pixel_values)
             embeddings = patch_embeds.flatten(2).transpose(1, 2)
 
-            max_nb_patches_h, max_nb_patches_w = max_im_h // embeddings_module.patch_size, max_im_w // embeddings_module.patch_size
             boundaries = torch.arange(
                 1 / embeddings_module.num_patches_per_side, 1.0, 1 / embeddings_module.num_patches_per_side, device=pixel_values.device
             )
@@ -277,8 +276,7 @@ def export_smolvla(policy, sample_observation, output_dir):
     
     # 6. Export prefix pass
     image_keys = sorted([k for k in sample_observation.keys() if k.startswith("observation.images")])
-    num_images = len(image_keys)
-    
+
     prefix_wrapper = SmolVLAPrefixWrapper(policy, image_keys).to(device).eval()
     
     images = [sample_observation[k] for k in image_keys]

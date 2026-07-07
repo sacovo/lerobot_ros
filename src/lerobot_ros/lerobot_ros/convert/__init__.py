@@ -5,8 +5,6 @@ This module provides converters for various ROS message types to PyTorch tensors
 and back. All topic classes are registered in BaseTopic.MAPPINGS for easy lookup.
 """
 
-from torch.distributed.algorithms.join import Join
-
 from .base import (
     BaseTopic,
     clean_topic_name,

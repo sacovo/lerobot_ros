@@ -10,7 +10,6 @@ from rclpy.action import ActionClient
 from lerobot_interfaces.srv import EndEpisode, NewDataset, StartEpisode, FinalizeDataset, PushToHub
 from lerobot_interfaces.action import StoreEpisodes
 from rclpy.node import Node
-from std_srvs.srv import Trigger
 
 
 def call_service(node: Node, service_name: str, request, srv_type):

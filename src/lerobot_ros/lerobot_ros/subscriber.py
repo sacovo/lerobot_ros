@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 
 import rerun as rr
 import torch
-from lerobot_ros.convert.image import ImageCompressedTopic
 from rclpy.node import Node
 
 try:
@@ -19,8 +18,7 @@ except ImportError:
 
 from .config import empty_frame
 from .convert import BaseTopic
-from .convert.image import ImageTopic
-from .core.frame_assembler import FrameAssembler, key_for_topic
+from .core.frame_assembler import FrameAssembler
 
 
 class Ros2Feature:

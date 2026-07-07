@@ -3,14 +3,10 @@ import argparse
 import os
 import sys
 import torch
-import numpy as np
 
 import rosbag2_py
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
-
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.feature_utils import DEFAULT_FEATURES
 
 from lerobot_ros.config import load_toml_dict, parse_config
 from lerobot_ros.core import FrameAssembler, DatasetWriter
@@ -146,7 +142,6 @@ def main():
     assembler = FrameAssembler(config.topics)
     try:
         writer = DatasetWriter(args.repo_id, config, resume=args.resume)
-        dataset = writer.dataset
     except Exception as e:
         print(f"Failed to initialize LeRobotDataset: {e}")
         sys.exit(1)

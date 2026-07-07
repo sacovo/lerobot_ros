@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import os
-import sys
 import time
 import base64
 import typing
@@ -11,7 +10,6 @@ import cv2
 import yaml
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -19,8 +17,6 @@ import rosbag2_py
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.feature_utils import DEFAULT_FEATURES
 from lerobot_ros.config import load_toml_dict, parse_config
 from lerobot_ros.convert.image import ros_image_to_numpy, ImageTopic, ImageCompressedTopic, _rotate_expand
 from lerobot_ros.bag_to_dataset import get_storage_id_from_bag

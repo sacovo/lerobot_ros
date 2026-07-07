@@ -1,7 +1,6 @@
 import os
 import sys
 import threading
-import traceback
 from typing import Optional
 
 import rclpy
@@ -21,7 +20,6 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import Int32
 from std_srvs.srv import Trigger
-from tqdm import tqdm
 
 from .config import ROSFeatureConfig, load_toml_dict, parse_config
 from .subscriber import Ros2Feature

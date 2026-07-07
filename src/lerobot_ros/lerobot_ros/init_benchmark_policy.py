@@ -92,7 +92,7 @@ def main():
     policy = make_policy(policy_cfg, ds_meta=mock_meta)
     policy.eval()
 
-    print(f"Creating processors (identity normalization, no dataset stats)...")
+    print("Creating processors (identity normalization, no dataset stats)...")
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy_cfg,
         pretrained_path=None,
@@ -117,8 +117,8 @@ def main():
     print('# ds_repo_id is omitted — feature shapes are derived from [topics]')
     print()
     print("Then run the policy controller with:")
-    print(f'  ros2 run lerobot_ros policy_controller --ros-args \\')
-    print(f'      -p config:=<your_config>.toml -p benchmark:=true')
+    print('  ros2 run lerobot_ros policy_controller --ros-args \\')
+    print('      -p config:=<your_config>.toml -p benchmark:=true')
 
 
 if __name__ == "__main__":
