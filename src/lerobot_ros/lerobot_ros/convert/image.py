@@ -140,7 +140,39 @@ class ImageTopic(BaseTopic):
         return img
 
 
+def _decode_jpeg_nvjpeg(np_arr: np.ndarray) -> np.ndarray:
+    """Decode JPEG bytes via NVJPEG (GPU hardware decode, e.g. on Jetson)
+    instead of libjpeg-turbo on CPU, returning an RGB (H, W, C) uint8 numpy
+    array -- verified bit-identical to the cv2.imdecode + COLOR_BGR2RGB path
+    below (mode=RGB forces 3-channel output the same way IMREAD_COLOR does).
+    Bringing the result back to CPU immediately keeps the rest of
+    to_tensor()'s rotate/resize path (cv2-based) unchanged; only the decode
+    itself moves to the GPU.
+
+    Requires a CUDA device and a torchvision build with NVJPEG support.
+    Verify with:
+        python3 -c "import torch,torchvision; from torchvision.io import \\
+        encode_jpeg,decode_jpeg; t=torch.randint(0,255,(3,64,64), \\
+        dtype=torch.uint8); out=decode_jpeg(encode_jpeg(t),device='cuda'); \\
+        print(out.device)"
+    """
+    from torchvision.io import ImageReadMode, decode_jpeg
+
+    raw = torch.tensor(np_arr)
+    img_tensor = decode_jpeg(raw, mode=ImageReadMode.RGB, device="cuda")
+    return img_tensor.permute(1, 2, 0).cpu().numpy()
+
+
 class ImageCompressedTopic(ImageTopic):
+    def __init__(self, use_nvjpeg=False, **kwargs):
+        super().__init__(**kwargs)
+        self.use_nvjpeg = use_nvjpeg
+        if self.use_nvjpeg and not torch.cuda.is_available():
+            raise ValueError(
+                f"Topic '{kwargs.get('topic_name')}' has use_nvjpeg=true but no CUDA "
+                "device is available -- fix at startup rather than failing per-frame."
+            )
+
     @staticmethod
     def msg_type():
         return CompressedImage
@@ -155,10 +187,14 @@ class ImageCompressedTopic(ImageTopic):
             data = bytes(data)
 
         np_arr = np.frombuffer(data, dtype=np.uint8)
-        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        if img is None:
-            raise ValueError("Failed to decode compressed image")
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        if self.use_nvjpeg:
+            img = _decode_jpeg_nvjpeg(np_arr)
+        else:
+            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if img is None:
+                raise ValueError("Failed to decode compressed image")
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         if self.rotate:
             rot = self.rotate % 360

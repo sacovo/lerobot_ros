@@ -41,6 +41,17 @@ class Ros2Feature:
         self.frame_callback = None
         self.assembler = FrameAssembler(topics)
 
+        # Whether _process_loop should actually decode/convert incoming
+        # frames, or just drain and discard them. Off by default: with no
+        # active policy there is no consumer for these tensors, so paying for
+        # JPEG decode + resize + tensor conversion on every configured image
+        # topic, every tick, is pure waste -- and if that conversion work ever
+        # falls behind the Rust collector's production rate (e.g. while other
+        # CPU-heavy nodes are also running), proc_queue fills up and frames
+        # get dropped anyway. PolicyController toggles this via set_active()
+        # in lockstep with its own collect_frames flag.
+        self.active = False
+
         self.rerun_remote = rerun_remote
         self.visualize = visualize
         if visualize:
@@ -229,6 +240,13 @@ class Ros2Feature:
 
             frame, t = item
 
+            if not self.active:
+                # No consumer for these frames right now (see .active) --
+                # drain and discard without paying for decode/resize/tensor
+                # conversion.
+                self.proc_queue.task_done()
+                continue
+
             if self.use_rust_collector:
                 # Convert raw messages to tensors
                 converted_msgs = self._convert_raw_frame(frame)
@@ -267,6 +285,10 @@ class Ros2Feature:
 
     def _convert_frame(self, frame: Dict[str, List[torch.Tensor]]):
         return self.assembler.assemble(frame)
+
+    def set_active(self, active: bool):
+        """Enable/disable per-frame conversion in _process_loop (see .active)."""
+        self.active = active
 
     def register_frame_callback(self, callback):
         """

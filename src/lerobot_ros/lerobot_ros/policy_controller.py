@@ -218,6 +218,7 @@ class PolicyController:
                 self.progress_windows[policy_name].clear()
             self.action_queue.clear()
             self.collect_frames = True
+            self.convertor.set_active(True)
             self.running = True
             self._task_start_mono = time.monotonic()
         self.publish_status()
@@ -243,6 +244,7 @@ class PolicyController:
         with self._state_lock:
             self.running = False
             self.collect_frames = False
+            self.convertor.set_active(False)
             self.action_queue.clear()
             self.active_policy_name = None
             self._current_task = ""

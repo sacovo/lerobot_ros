@@ -1091,6 +1091,45 @@ class TestImageConversion:
 
         assert tensor.shape == (width, height, 3)
 
+    def test_compressed_image_nvjpeg_requires_cuda(self):
+        """use_nvjpeg=True must fail at construction time, not on the first
+        frame in a background thread, when no CUDA device is available."""
+        from lerobot_ros.convert import image
+
+        with pytest.raises(ValueError, match="use_nvjpeg"):
+            image.ImageCompressedTopic(
+                height=48,
+                width=64,
+                channels=3,
+                use_nvjpeg=True,
+                topic_name="/camera/compressed",
+                qos=DEFAULT_QOS,
+            )
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA device with NVJPEG support")
+    def test_compressed_image_nvjpeg_matches_cv2(self):
+        """On a real CUDA device, the NVJPEG decode path must produce the
+        same tensor as the default cv2.imdecode path for the same bytes."""
+        from lerobot_ros.convert import image
+
+        width, height = 64, 48
+
+        cv2_topic = image.ImageCompressedTopic(
+            height=height, width=width, channels=3,
+            topic_name="/camera/compressed", qos=DEFAULT_QOS,
+        )
+        nvjpeg_topic = image.ImageCompressedTopic(
+            height=height, width=width, channels=3, use_nvjpeg=True,
+            topic_name="/camera/compressed", qos=DEFAULT_QOS,
+        )
+
+        ros_msg, _ = self._create_compressed_image(width, height, format="jpeg")
+        cv2_tensor = cv2_topic.to_tensor(ros_msg)
+        nvjpeg_tensor = nvjpeg_topic.to_tensor(ros_msg)
+
+        assert nvjpeg_tensor.shape == cv2_tensor.shape
+        torch.testing.assert_close(nvjpeg_tensor, cv2_tensor, atol=2, rtol=0)
+
     def test_image_topic_registered(self):
         """Test that image topic classes are registered."""
         from lerobot_ros.convert.base import BaseTopic
