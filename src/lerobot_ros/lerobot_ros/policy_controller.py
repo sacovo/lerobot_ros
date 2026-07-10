@@ -26,6 +26,7 @@ from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReli
 from std_msgs.msg import Empty, String
 
 from .config import PolicyConfig, ROSFeatureConfig, load_toml_dict, parse_config
+from .controller_switch import ControllerSwitcher
 from .core import RosFeaturePublisher
 from .core.frame_assembler import FrameAssembler
 from .episode_tracker import EpisodeTracker, stack_progress_window
@@ -138,6 +139,28 @@ class PolicyController:
             .double_value
         )
         self._last_heartbeat = 0.0
+
+        # Optional scoped controller switching. When `activate_controller` is set,
+        # the controller is activated for the duration of a run_policy goal and the
+        # previously-active exclusive controller(s) are restored on exit. Empty
+        # default keeps this node robot-agnostic (controller names live in config,
+        # not code) and leaves switching to the orchestrator, as before. This does
+        # not change the safety model -- actuation is still gated by the heartbeat.
+        self._switcher = ControllerSwitcher(
+            node,
+            activate_controller=(
+                node.declare_parameter("activate_controller", "")
+                .get_parameter_value().string_value
+            ),
+            exclusive_controllers=(
+                node.declare_parameter("exclusive_controllers", [""])
+                .get_parameter_value().string_array_value
+            ),
+            controller_manager=(
+                node.declare_parameter("controller_manager", "/controller_manager")
+                .get_parameter_value().string_value
+            ),
+        )
 
         # Safety heartbeat: autonomy only publishes while this is refreshed.
         self.heartbeat_sub = node.create_subscription(
@@ -314,6 +337,19 @@ class PolicyController:
                 "max_episode_length_s; it will only stop on cancel or heartbeat loss."
             )
 
+        # Activate the configured controller for this run (no-op unless enabled),
+        # restoring the previous one in the finally below. Fail fast rather than
+        # run a policy whose commands land on an inactive controller.
+        switched_ok, switch_token = self._switcher.acquire()
+        if not switched_ok:
+            self._goal_active = False
+            goal_handle.abort()
+            result.success = False
+            result.message = (
+                f"failed to activate controller '{self._switcher.activate_controller}'"
+            )
+            return result
+
         self._start(policy_name, task)
 
         feedback = RunPolicy.Feedback()
@@ -356,6 +392,7 @@ class PolicyController:
                 goal_handle.publish_feedback(feedback)
         finally:
             self._stop(f"goal ended ({result.message or 'unknown'})")
+            self._switcher.release(switch_token)
             self._goal_active = False
 
     # ------------------------------------------------------------------
