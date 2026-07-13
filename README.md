@@ -85,6 +85,40 @@ These constraints can be configured in three ways:
    round_values = { gripper = [-1.0, 1.0] }
    ```
 
+### Input Transforms (observations)
+
+`limits`/`round_values` above shape *action* outputs. For **observation** inputs you can
+apply a nonlinear `transform` as the message is converted to a tensor. This is useful for
+sensors whose interesting range is small relative to their full range — e.g. a gripper ToF
+distance that reads up to 4000 mm but only matters below ~200 mm. Converting the distance
+to a "closeness" hands most of the value range to the region that matters, giving the policy
+larger gradients there.
+
+Note this is *not* a plain sign-flip: normalization in the training pipeline already absorbs
+any affine (linear) inversion for free, so only nonlinear reshaping adds information. The
+transform is applied identically during recording and inference, so the dataset statistics
+stay consistent. It is only valid on observation topics (there is no inverse for actions), and
+a transformed topic is always stored as `float32`.
+
+Available `type` values:
+- `exp_decay`: `exp(-value / scale)` — bounded in `(0, 1]`, `0 → 1`, large values `→ ~0`. Recommended default; pick `scale` near your region of interest.
+- `reciprocal`: `scale / (value + eps)` — sharper emphasis near zero but unbounded; `eps` guards division by zero.
+
+```toml
+# ToF distance (mm) inside the gripper; only 0–200mm is interesting
+[topics."/gripper/tof_distance"]
+msg_type = "Float32"
+tag = "observation"
+key = "tof_closeness"
+transform = { type = "exp_decay", scale = 100.0 }
+```
+
+Like `limits`, a `transform` can also be applied per element by name for multi-value topics:
+
+```toml
+transform = { near_sensor = { type = "exp_decay", scale = 100.0 } }
+```
+
 ## Quick guide
 
 First you need to configure the topics you want to record. Usually these would be some images that a human needs to solve the task, as well as sensors and joint states of your motors. These are the input topics that should later be predicted by a policy.

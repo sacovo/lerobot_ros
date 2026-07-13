@@ -250,3 +250,67 @@ def test_limits_and_rounding():
     # 0.6 -> rounded to 1.0
     assert msg.position[2] == pytest.approx(1.0)
 
+
+def test_input_transform():
+    """Test nonlinear input transforms applied on the observation (to_tensor) path."""
+    import math
+
+    qos = QoSProfile(depth=10)
+
+    # 1. Scalar exp_decay: a ToF distance (mm) -> closeness in (0, 1].
+    topic = Float32Topic(
+        topic_name="/gripper/tof",
+        qos=qos,
+        tag="observation",
+        transform={"type": "exp_decay", "scale": 100.0},
+    )
+    for dist in [0.0, 100.0, 200.0, 4000.0]:
+        msg = Float32(data=dist)
+        assert topic.to_tensor(msg).item() == pytest.approx(math.exp(-dist / 100.0), abs=1e-6)
+    # Transformed topics are always reported as float32.
+    assert topic.feature_description()["dtype"] == "float32"
+
+    # 2. No transform -> identity (and original dtype preserved).
+    plain = Float32Topic(topic_name="/gripper/raw", qos=qos, tag="observation")
+    assert plain.to_tensor(Float32(data=123.0)).item() == pytest.approx(123.0)
+
+    # 3. reciprocal with eps guard: value 0 must not blow up.
+    recip = Float32Topic(
+        topic_name="/gripper/tof2",
+        qos=qos,
+        tag="observation",
+        transform={"type": "reciprocal", "scale": 100.0, "eps": 1.0},
+    )
+    assert recip.to_tensor(Float32(data=0.0)).item() == pytest.approx(100.0)
+
+    # 4. Per-name transform on a multi-array: only the named element is reshaped.
+    multi = Float32MultiArrayTopic(
+        names=["near", "far"],
+        topic_name="/tof_array",
+        qos=qos,
+        tag="observation",
+        transform={"near": {"type": "exp_decay", "scale": 100.0}},
+    )
+    out = multi.to_tensor(Float32MultiArray(data=[100.0, 500.0]))
+    assert out[0].item() == pytest.approx(math.exp(-1.0), abs=1e-6)
+    assert out[1].item() == pytest.approx(500.0)
+
+    # 5. Transforms are rejected on action topics (no inverse to publish back).
+    with pytest.raises(ValueError):
+        Float32Topic(
+            topic_name="/some/action",
+            qos=qos,
+            tag="action",
+            transform={"type": "exp_decay", "scale": 100.0},
+        )
+
+    # 6. Unknown transform type raises a clear error.
+    bad = Float32Topic(
+        topic_name="/bad",
+        qos=qos,
+        tag="observation",
+        transform={"type": "does_not_exist"},
+    )
+    with pytest.raises(ValueError):
+        bad.to_tensor(Float32(data=1.0))
+
