@@ -101,9 +101,11 @@ def setup_bag_reader(path: str, cfg_path: str):
         reader.open(storage_options, converter_options)
         
         topic_types = {}
+        topic_type_strs = {}
         for topic_info in reader.get_all_topics_and_types():
             try:
                 topic_types[topic_info.name] = get_message(topic_info.type)
+                topic_type_strs[topic_info.name] = topic_info.type
             except Exception:
                 pass
                 
@@ -133,6 +135,7 @@ def setup_bag_reader(path: str, cfg_path: str):
         return {
             "reader": reader,
             "topic_types": topic_types,
+            "topic_type_strs": topic_type_strs,
             "bag_to_config_map": bag_to_config_map,
             "start_time_ns": start_time_ns,
             "duration_sec": duration_sec,
@@ -197,8 +200,14 @@ def list_bags():
             dirs.clear()
             continue
         if "metadata.yaml" in files:
-            bags.append(os.path.abspath(root))
-            
+            abs_path = os.path.abspath(root)
+            rel_path = os.path.relpath(abs_path, root_dir).replace(os.sep, "/")
+            bags.append({"path": abs_path, "rel_path": rel_path})
+
+    # Newest-looking (lexicographically largest, e.g. by embedded date) first,
+    # with bags in the same subfolder grouped together for the GUI.
+    bags.sort(key=lambda b: b["rel_path"], reverse=True)
+
     BAGS_LIST_CACHE = bags
     BAGS_LIST_CACHE_TIME = now
     return {"bags": bags}
@@ -233,7 +242,7 @@ def get_bag_info(path: str = Query(..., description="Absolute path to the bag di
                 break
         topics.append({
             "name": topic_name,
-            "type": msg_class.__name__ if hasattr(msg_class, "__name__") else str(msg_class),
+            "type": bag_data["topic_type_strs"].get(topic_name, msg_class.__name__ if hasattr(msg_class, "__name__") else str(msg_class)),
             "message_count": msg_count
         })
         

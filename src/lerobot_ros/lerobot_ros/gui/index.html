@@ -38,9 +38,10 @@
                 <div class="panel-card bag-selection">
                     <h2>Select Bag File</h2>
                     <div class="bag-inputs">
-                        <select id="bag-select">
-                            <option value="">-- Scan for bags or enter path --</option>
-                        </select>
+                        <div class="bag-combobox" id="bag-combobox">
+                            <input type="text" id="bag-search" class="bag-search-input" placeholder="-- Scan for bags or search... --" autocomplete="off">
+                            <div class="bag-combobox-list" id="bag-combobox-list"></div>
+                        </div>
                         <input type="text" id="custom-bag-path" placeholder="Or enter custom absolute path to bag...">
                         <button id="load-bag-btn" class="btn-primary">Load Bag</button>
                     </div>

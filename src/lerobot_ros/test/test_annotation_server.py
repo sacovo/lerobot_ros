@@ -47,7 +47,8 @@ def test_annotation_endpoints():
         bags_data = response.json()
         assert "bags" in bags_data
         # Ensure our temporary bag is discovered
-        assert any(bag_path in os.path.abspath(b) for b in bags_data["bags"])
+        assert any(bag_path in os.path.abspath(b["path"]) for b in bags_data["bags"])
+        assert all("rel_path" in b for b in bags_data["bags"])
         
         # 2. Test GET /api/bag-info
         response = client.get(f"/api/bag-info?path={bag_path}")

@@ -34,11 +34,19 @@ let state = {
 let playbackTimer = null;
 let lastTickTime = 0;
 
+// Bag combobox state
+let allBags = []; // [{ path, rel_path }], as scanned from /api/bags
+let filteredBags = []; // Currently visible (search-filtered) subset of allBags
+let bagListOpen = false;
+let activeBagIndex = -1;
+
 // DOM Elements
 const configPathInput = document.getElementById('config-path');
 const repoIdInput = document.getElementById('repo-id');
 const resumeDsCheckbox = document.getElementById('resume-ds');
-const bagSelect = document.getElementById('bag-select');
+const bagCombobox = document.getElementById('bag-combobox');
+const bagSearchInput = document.getElementById('bag-search');
+const bagComboboxList = document.getElementById('bag-combobox-list');
 const customBagPathInput = document.getElementById('custom-bag-path');
 const loadBagBtn = document.getElementById('load-bag-btn');
 const cameraContainer = document.getElementById('camera-container');
@@ -112,17 +120,77 @@ async function scanBags() {
     try {
         const response = await fetch('/api/bags');
         const data = await response.json();
-        if (data.bags) {
-            bagSelect.innerHTML = '<option value="">-- Select a scanned bag --</option>';
-            data.bags.forEach(bag => {
-                const option = document.createElement('option');
-                option.value = bag;
-                option.textContent = bag.split('/').pop() || bag;
-                bagSelect.appendChild(option);
-            });
-        }
+        allBags = data.bags || [];
+        filteredBags = allBags;
+        renderBagList(filteredBags);
     } catch (err) {
         console.error('Failed to scan workspace bags:', err);
+    }
+}
+
+// Render the (optionally filtered) bag list, grouped by parent folder
+// (e.g. a date-named subfolder) so bags recorded on different days/sessions
+// are easy to tell apart at a glance.
+function renderBagList(bags) {
+    bagComboboxList.innerHTML = '';
+    activeBagIndex = -1;
+
+    if (bags.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'bag-combobox-empty';
+        empty.textContent = allBags.length === 0 ? 'No bags found under scan root.' : 'No bags match your search.';
+        bagComboboxList.appendChild(empty);
+        return;
+    }
+
+    let lastGroup = undefined;
+    bags.forEach((bag, idx) => {
+        const slashIdx = bag.rel_path.lastIndexOf('/');
+        const group = slashIdx === -1 ? null : bag.rel_path.slice(0, slashIdx);
+        if (group !== lastGroup) {
+            const label = document.createElement('div');
+            label.className = 'bag-group-label';
+            label.textContent = group || 'Ungrouped';
+            bagComboboxList.appendChild(label);
+            lastGroup = group;
+        }
+        const item = document.createElement('div');
+        item.className = 'bag-combobox-item';
+        item.textContent = group ? bag.rel_path.slice(slashIdx + 1) : bag.rel_path;
+        item.title = bag.rel_path;
+        item.dataset.index = String(idx);
+        bagComboboxList.appendChild(item);
+    });
+}
+
+function filterBags(query) {
+    const q = query.trim().toLowerCase();
+    filteredBags = q ? allBags.filter(b => b.rel_path.toLowerCase().includes(q)) : allBags;
+    renderBagList(filteredBags);
+}
+
+function openBagList() {
+    bagComboboxList.classList.add('open');
+    bagListOpen = true;
+}
+
+function closeBagList() {
+    bagComboboxList.classList.remove('open');
+    bagListOpen = false;
+    activeBagIndex = -1;
+}
+
+function selectBag(bag) {
+    if (!bag) return;
+    customBagPathInput.value = bag.path;
+    bagSearchInput.value = bag.rel_path;
+    closeBagList();
+}
+
+function updateActiveBagItem(items) {
+    items.forEach((el, i) => el.classList.toggle('active', i === activeBagIndex));
+    if (activeBagIndex >= 0 && items[activeBagIndex]) {
+        items[activeBagIndex].scrollIntoView({ block: 'nearest' });
     }
 }
 
@@ -132,10 +200,59 @@ function setupEventListeners() {
         localStorage.setItem('configPath', configPathInput.value);
     });
 
-    // Bag selection dropdown
-    bagSelect.addEventListener('change', () => {
-        if (bagSelect.value) {
-            customBagPathInput.value = bagSelect.value;
+    // Bag selection combobox (searchable, grouped by folder)
+    bagSearchInput.addEventListener('focus', () => {
+        bagSearchInput.select();
+        renderBagList(filteredBags);
+        openBagList();
+    });
+
+    bagSearchInput.addEventListener('input', () => {
+        filterBags(bagSearchInput.value);
+        openBagList();
+    });
+
+    bagSearchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (!bagListOpen) {
+                openBagList();
+                return;
+            }
+            const items = bagComboboxList.querySelectorAll('.bag-combobox-item');
+            activeBagIndex = Math.min(activeBagIndex + 1, items.length - 1);
+            updateActiveBagItem(items);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            const items = bagComboboxList.querySelectorAll('.bag-combobox-item');
+            activeBagIndex = Math.max(activeBagIndex - 1, 0);
+            updateActiveBagItem(items);
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            const items = bagComboboxList.querySelectorAll('.bag-combobox-item');
+            if (activeBagIndex >= 0 && items[activeBagIndex]) {
+                const idx = parseInt(items[activeBagIndex].dataset.index, 10);
+                selectBag(filteredBags[idx]);
+            }
+        } else if (e.key === 'Escape') {
+            closeBagList();
+            bagSearchInput.blur();
+        }
+    });
+
+    // Use mousedown (not click) + preventDefault so the input doesn't lose
+    // focus/close the list before the selection is registered.
+    bagComboboxList.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const item = e.target.closest('.bag-combobox-item');
+        if (!item) return;
+        const idx = parseInt(item.dataset.index, 10);
+        selectBag(filteredBags[idx]);
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!bagCombobox.contains(e.target)) {
+            closeBagList();
         }
     });
 
