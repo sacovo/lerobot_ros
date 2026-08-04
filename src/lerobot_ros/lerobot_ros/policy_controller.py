@@ -30,6 +30,7 @@ from .controller_switch import ControllerSwitcher
 from .core import RosFeaturePublisher
 from .core.frame_assembler import FrameAssembler
 from .episode_tracker import EpisodeTracker, stack_progress_window
+from .estop import EStopMonitor
 from .ros_torch_utils import BaseTopic, prepare_frame
 from .subscriber import Ros2Feature
 
@@ -139,6 +140,21 @@ class PolicyController:
             .double_value
         )
         self._last_heartbeat = 0.0
+
+        # Latching software e-stop (SPEC_ESTOP.md): distinct from the heartbeat
+        # deadman -- an e-stop aborts the active goal and rejects new ones
+        # until reset; the heartbeat only holds and resumes.
+        self._estop = EStopMonitor(
+            node,
+            topic=(
+                node.declare_parameter("e_stop_topic", "/e_stop")
+                .get_parameter_value().string_value
+            ),
+            reset_topic=(
+                node.declare_parameter("e_stop_reset_topic", "/e_stop/reset")
+                .get_parameter_value().string_value
+            ),
+        )
 
         # Optional scoped controller switching. When `activate_controller` is set,
         # the controller is activated for the duration of a run_policy goal and the
@@ -300,6 +316,11 @@ class PolicyController:
     # ------------------------------------------------------------------
 
     def goal_callback(self, _goal_request) -> GoalResponse:
+        if self._estop.tripped:
+            self.node.get_logger().warn(
+                "Rejecting run_policy goal: e-stop latched; publish /e_stop/reset"
+            )
+            return GoalResponse.REJECT
         with self._state_lock:
             if self._goal_active:
                 self.node.get_logger().warn(
@@ -362,6 +383,14 @@ class PolicyController:
                     goal_handle.canceled()
                     result.success = False
                     result.message = "cancelled"
+                    return result
+
+                # E-stop takes priority over everything else, including a
+                # heartbeat-hold: abort immediately rather than keep holding.
+                if self._estop.tripped:
+                    goal_handle.abort()
+                    result.success = False
+                    result.message = "e-stop"
                     return result
 
                 # The heartbeat gates *actuation*, not the goal: the operator
@@ -662,6 +691,16 @@ class PolicyController:
             if not self.running:
                 paused_since = None
                 flushed_while_paused = False
+                time.sleep(max(0, next_iter - time.time()))
+                continue
+
+            # Defense in depth: never actuate while the e-stop is latched, even
+            # for the one poll interval (<=50ms) before execute_callback's own
+            # check catches up and stops the goal. Drop any queued action
+            # outright (an e-stop is an abort, not a hold) rather than leaving
+            # it to publish on resume.
+            if self._estop.tripped:
+                self.action_queue.clear()
                 time.sleep(max(0, next_iter - time.time()))
                 continue
 
