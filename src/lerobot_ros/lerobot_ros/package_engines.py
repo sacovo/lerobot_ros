@@ -47,16 +47,7 @@ def main():
         sys.exit(1)
 
     # 2. Write rebuild_on_device.py
-    #
-    # This is the only rebuild script generated (a trtexec-based .sh used to
-    # be generated alongside it, but trtexec can silently produce an FP32
-    # engine on TensorRT 11+ even when --fp16 is requested, since it can't do
-    # the STRONGLY_TYPED/FP16-ONNX fallback TRT 11+ needs). Builds via
-    # lerobot_ros.trt.engine.build_trt_engine (the canonical implementation,
-    # which does have that fallback) rather than re-implementing engine
-    # building here, so the device rebuild path can't drift out of sync again.
-    # Requires lerobot_ros to be importable on-device, which holds since the
-    # Jetson image bakes the full ROS workspace.
+    # - Runs on first load to apply device specific changes to onnx
     py_path = os.path.join(temp_dir, "rebuild_on_device.py")
     with open(py_path, "w") as f:
         f.write('''import os

@@ -12,10 +12,10 @@ try:
 except ImportError:
     pass
 
-from trt.exporter import export_act, export_smolvla, export_episode_tracker
-from trt.engine import build_trt_engine
-from trt.policy import load_trt_policy, EpisodeTrackerTRTPolicy
-from trt.validate import validate_policy_accuracy, validate_episode_tracker_accuracy
+from .trt.exporter import export_act, export_smolvla, export_episode_tracker
+from .trt.engine import build_trt_engine
+from .trt.policy import load_trt_policy, EpisodeTrackerTRTPolicy
+from .trt.validate import validate_policy_accuracy, validate_episode_tracker_accuracy
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.factory import make_policy, make_pre_post_processors
@@ -25,7 +25,7 @@ def convert_episode_tracker(args):
     """Export/convert an EpisodeTracker progress-regressor checkpoint (not a
     LeRobot policy -- loaded via its own HF Hub mixin and windowed-dataset
     input, so this bypasses the PreTrainedConfig/make_policy path below."""
-    from episode_tracker import EpisodeTracker, WindowedProgressDataset
+    from .episode_tracker import EpisodeTracker, WindowedProgressDataset
 
     print(f"Loading EpisodeTracker checkpoint '{args.checkpoint}'...")
     model = EpisodeTracker.from_pretrained(args.checkpoint)
