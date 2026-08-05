@@ -1091,6 +1091,7 @@ class TestImageConversion:
 
         assert tensor.shape == (width, height, 3)
 
+    @pytest.mark.skipif(torch.cuda.is_available(), reason="tests the no-CUDA error path")
     def test_compressed_image_nvjpeg_requires_cuda(self):
         """use_nvjpeg=True must fail at construction time, not on the first
         frame in a background thread, when no CUDA device is available."""

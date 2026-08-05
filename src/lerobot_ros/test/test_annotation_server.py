@@ -8,9 +8,23 @@ import sys
 import rosbag2_py
 from rclpy.serialization import serialize_message
 from std_msgs.msg import Float32, String
-from fastapi.testclient import TestClient
 
-from lerobot_ros.annotation_server import app
+# fastapi is only needed by the annotation server (a dev-side tool) and is
+# deliberately not part of the rover image venv. Do NOT use a module-level
+# pytest.importorskip here: launch_testing's collection hook imports every
+# test module during collection, and a Skipped (or ImportError) raised there
+# aborts collection of the ENTIRE test directory, silently dropping every
+# other test file. Guard the import and skip the tests individually instead.
+try:
+    from fastapi.testclient import TestClient
+    from lerobot_ros.annotation_server import app
+except ImportError:
+    TestClient = None
+    app = None
+
+pytestmark = pytest.mark.skipif(
+    TestClient is None, reason="fastapi not installed (lean rover image)")
+
 from test_bag_to_dataset import create_test_bag
 
 

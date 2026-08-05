@@ -12,18 +12,27 @@ device with tensorrt/onnx installed, so it only runs where that's available
 import pytest
 import torch
 
-pytest.importorskip("tensorrt")
-pytest.importorskip("onnx")
+# No module-level pytest.importorskip here: launch_testing's collection hook
+# imports every test module during collection, and a Skipped raised there
+# aborts collection of the ENTIRE test directory (see test_annotation_server).
+try:
+    import tensorrt  # noqa: F401
+    import onnx  # noqa: F401
+    _have_trt = True
+except ImportError:
+    _have_trt = False
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="TensorRT engine building requires a CUDA device"
+    not (_have_trt and torch.cuda.is_available()),
+    reason="TensorRT engine building requires tensorrt/onnx and a CUDA device",
 )
 
-from lerobot_ros.episode_tracker import EpisodeTracker
-from lerobot_ros.trt.engine import build_trt_engine
-from lerobot_ros.trt.exporter import export_episode_tracker
-from lerobot_ros.trt.policy import EpisodeTrackerTRTPolicy
-from lerobot_ros.trt.validate import validate_episode_tracker_accuracy
+if _have_trt:
+    from lerobot_ros.episode_tracker import EpisodeTracker
+    from lerobot_ros.trt.engine import build_trt_engine
+    from lerobot_ros.trt.exporter import export_episode_tracker
+    from lerobot_ros.trt.policy import EpisodeTrackerTRTPolicy
+    from lerobot_ros.trt.validate import validate_episode_tracker_accuracy
 
 
 def _make_dummy_model():
