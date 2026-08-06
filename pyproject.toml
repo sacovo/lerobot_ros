@@ -16,7 +16,18 @@ so101 = ["lerobot[feetech]>=0.4.2"]
 smolvla = ["lerobot[smolvla]>=0.4.2"]
 
 [dependency-groups]
-dev = ["maturin>=1.11.2"]
+# Dev/test-only tooling. The annotation GUI (annotation_server.py) is a
+# dev-side tool: fastapi + uvicorn run it, and httpx drives it in tests via
+# fastapi.testclient.TestClient (test/test_annotation_server.py). Kept out of
+# [project.dependencies] so the lean rover/Jetson runtime image doesn't ship
+# them. The ROS-side test deps (rclpy, rosbag2_py, std_msgs) come from the
+# sourced ROS install, not pip.
+dev = [
+  "maturin>=1.11.2",
+  "fastapi>=0.141.1",
+  "uvicorn>=0.52.1",
+  "httpx>=0.28",
+]
 
 
 [tool.ty.environment]

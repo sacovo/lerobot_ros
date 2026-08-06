@@ -83,8 +83,29 @@ def test_annotation_endpoints():
         assert "telemetry" in frame_data
         assert "cameras" in frame_data
         assert "/test/float" in frame_data["telemetry"]
-        assert frame_data["telemetry"]["/test/float"]["data"] == 20.0
-        
+        # Telemetry now mirrors the dataset feature columns (converter output),
+        # not the raw message fields: a Float32 scalar is keyed by its dataset
+        # feature name (the cleaned topic name), not the raw "data" field.
+        assert frame_data["telemetry"]["/test/float"] == {"test.float": 20.0}
+        # Each topic is latched the way the export writes it into every frame,
+        # with a status flag so the GUI can mark held/default values. The float
+        # message at t=1.5 lands exactly on this frame, so it is "live".
+        assert frame_data["telemetry_meta"]["/test/float"]["status"] == "live"
+        # Well past the last float message (t=3.3) -> value held (latched)
+        # forward, not freshly sampled at this frame.
+        response = client.get(f"/api/frame?path={bag_path}&time=3.9&config={config_path}")
+        assert response.status_code == 200
+        held = response.json()
+        assert held["telemetry"]["/test/float"] == {"test.float": 40.0}
+        assert held["telemetry_meta"]["/test/float"]["status"] == "held"
+        # Before the first float message (t=1.2) -> zero-padded default, matching
+        # what the export writes for a not-yet-seen topic.
+        response = client.get(f"/api/frame?path={bag_path}&time=0.5&config={config_path}")
+        assert response.status_code == 200
+        default = response.json()
+        assert default["telemetry"]["/test/float"] == {"test.float": 0.0}
+        assert default["telemetry_meta"]["/test/float"]["status"] == "default"
+
         # 4. Test POST /api/convert
         convert_payload = {
             "bag_path": bag_path,
@@ -124,6 +145,65 @@ def test_annotation_endpoints():
         # 6. Verify resulting dataset exists on disk
         dataset_path = os.path.join(dataset_root, "test_gui_dataset")
         assert os.path.exists(dataset_path)
+
+    finally:
+        shutil.rmtree(temp_dir)
+
+
+def test_annotation_persistence():
+    """Save/restore of episode timing (annotations.json next to the bag)."""
+    workspace_test_dir = "/workspaces/ros-fhnw-autonomy"
+    temp_dir = tempfile.mkdtemp(dir=workspace_test_dir)
+
+    try:
+        bag_path = os.path.join(temp_dir, "test_bag")
+        create_test_bag(bag_path, storage_id="mcap")
+
+        client = TestClient(app)
+
+        # 1. No annotations yet -> exists False, empty list
+        response = client.get(f"/api/annotations?path={bag_path}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["exists"] is False
+        assert data["annotations"] == []
+
+        # 2. Save annotations (with optional context and a success flag)
+        save_payload = {
+            "bag_path": bag_path,
+            "repo_id": "persist_ds",
+            "config": "some_config.toml",
+            "annotations": [
+                {"start_time": 1.0, "end_time": 2.0, "task": "task_a"},
+                {"start_time": 3.0, "end_time": 4.0, "task": "task_b", "success": False},
+            ],
+        }
+        response = client.post("/api/annotations", json=save_payload)
+        assert response.status_code == 200
+        assert response.json()["count"] == 2
+        assert os.path.exists(os.path.join(bag_path, "annotations.json"))
+
+        # 3. Read them back verbatim, including stored context
+        response = client.get(f"/api/annotations?path={bag_path}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["exists"] is True
+        assert data["repo_id"] == "persist_ds"
+        assert data["config"] == "some_config.toml"
+        assert len(data["annotations"]) == 2
+        assert data["annotations"][1]["task"] == "task_b"
+        assert data["annotations"][1]["success"] is False
+
+        # 4. Path traversal outside the scan root is rejected
+        response = client.get("/api/annotations?path=/etc")
+        assert response.status_code == 403
+
+        # 5. Saving to a non-existent bag directory is a 404
+        response = client.post("/api/annotations", json={
+            "bag_path": os.path.join(temp_dir, "does_not_exist"),
+            "annotations": [],
+        })
+        assert response.status_code == 404
 
     finally:
         shutil.rmtree(temp_dir)

@@ -18,6 +18,9 @@
     --font-mono: 'Space Grotesk', monospace;
     
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    --focus-ring: hsla(265, 80%, 60%, 0.25);
+    --row-hover: rgba(255, 255, 255, 0.035);
+    --scrollbar-thumb: rgba(255, 255, 255, 0.12);
     --border-radius-lg: 8px;
     --border-radius-md: 6px;
     --border-radius-sm: 4px;
@@ -37,8 +40,11 @@ body.light-theme {
     --success: #059669;
     --danger: #dc2626;
     --warning: #d97706;
-    
+
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    --focus-ring: rgba(79, 70, 229, 0.18);
+    --row-hover: rgba(0, 0, 0, 0.03);
+    --scrollbar-thumb: rgba(0, 0, 0, 0.18);
 }
 
 * {
@@ -101,7 +107,7 @@ body {
 .input-group {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 5px;
 }
 
 .input-group label {
@@ -118,17 +124,34 @@ select {
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
-    padding: 4px 10px;
-    border-radius: var(--border-radius-sm);
+    height: 36px;
+    padding: 0 12px;
+    border-radius: var(--border-radius-md);
     outline: none;
     font-family: var(--font-mono);
-    font-size: 12px;
-    transition: border-color 0.2s, background-color 0.2s;
+    font-size: 13px;
+    transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+.input-group input::placeholder,
+input::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.7;
 }
 
 .input-group input:focus,
 select:focus {
     border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* Header config inputs: give the longer paths room to breathe */
+#config-path {
+    min-width: 280px;
+}
+
+#repo-id {
+    min-width: 200px;
 }
 
 .checkbox-group {
@@ -162,13 +185,28 @@ select:focus {
     padding-right: 4px;
 }
 
-.left-panel::-webkit-scrollbar {
-    width: 6px;
+/* Subtle, consistent scrollbars for every scroll area */
+.left-panel,
+.telemetry-table-wrapper,
+.episodes-list-wrapper,
+.bag-combobox-list {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
-.left-panel::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 3px;
+.left-panel::-webkit-scrollbar,
+.telemetry-table-wrapper::-webkit-scrollbar,
+.episodes-list-wrapper::-webkit-scrollbar,
+.bag-combobox-list::-webkit-scrollbar {
+    width: 8px;
+}
+
+.left-panel::-webkit-scrollbar-thumb,
+.telemetry-table-wrapper::-webkit-scrollbar-thumb,
+.episodes-list-wrapper::-webkit-scrollbar-thumb,
+.bag-combobox-list::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 4px;
 }
 
 .right-panel {
@@ -218,16 +256,17 @@ select:focus {
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
-    padding: 4px 10px;
-    border-radius: var(--border-radius-sm);
+    padding: 0 12px;
+    border-radius: var(--border-radius-md);
     outline: none;
     font-family: var(--font-mono);
-    font-size: 12px;
-    transition: border-color 0.2s, background-color 0.2s;
+    font-size: 13px;
+    transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
 }
 
 .bag-search-input:focus {
     border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .bag-combobox-list {
@@ -259,7 +298,7 @@ select:focus {
 }
 
 .bag-combobox-item {
-    padding: 6px 10px;
+    padding: 8px 12px;
     font-family: var(--font-mono);
     font-size: 12px;
     color: var(--text-primary);
@@ -284,6 +323,20 @@ select:focus {
 #custom-bag-path {
     flex: 1.5;
     height: 36px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0 12px;
+    border-radius: var(--border-radius-md);
+    outline: none;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+#custom-bag-path:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 /* Camera viewport grid */
@@ -364,7 +417,11 @@ select:focus {
 
 .telemetry-table-wrapper {
     flex: 1;
-    overflow-y: auto;
+    /* min-height:0 lets this flex child actually scroll internally instead of
+       growing the card (and scrolling the whole left panel) as the telemetry
+       content changes while scrubbing. */
+    min-height: 0;
+    overflow: auto;
     border-radius: var(--border-radius-md);
     border: 1px solid var(--border-color);
     background: var(--bg-page);
@@ -372,39 +429,91 @@ select:focus {
 
 table {
     width: 100%;
+    /* Fixed layout so per-timestamp value length never resizes the columns. */
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 13px;
 }
 
 th, td {
-    padding: 8px 12px;
+    padding: 9px 14px;
     text-align: left;
 }
 
 th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
     background: var(--card-bg);
     border-bottom: 1px solid var(--border-color);
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
     font-size: 11px;
+    letter-spacing: 0.4px;
 }
 
 tr:not(:last-child) {
     border-bottom: 1px solid var(--border-color);
 }
 
+tbody tr:hover {
+    background: var(--row-hover);
+}
+
 td:first-child {
     font-family: var(--font-mono);
     color: var(--primary);
     width: 35%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-td pre {
+/* Dataset feature value: always a single line; clip with an ellipsis rather than
+   wrapping, so row height (and the panel size) stays constant while scrubbing. */
+.tele-val {
     font-family: var(--font-mono);
-    white-space: pre-wrap;
-    word-break: break-all;
     color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 0;
+}
+
+/* Rows whose value is latched (held) or not yet published (default): the value
+   is real and gets written to every dataset frame, but it wasn't sampled at
+   this exact frame, so dim it slightly to distinguish it from a live reading. */
+.tele-row-stale .tele-val {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* Small status chip next to a latched/default topic in the telemetry pane. */
+.tele-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    vertical-align: middle;
+    cursor: help;
+}
+
+.tele-badge-held {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.tele-badge-default {
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--text-secondary) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text-secondary) 40%, transparent);
 }
 
 /* Episode Marker Controls */
@@ -463,21 +572,50 @@ td pre {
     font-weight: 600;
 }
 
+#episodes-table tr.episode-row {
+    cursor: pointer;
+    transition: background-color 0.12s;
+}
+
+#episodes-table tr.episode-row:hover {
+    background: var(--row-hover);
+    box-shadow: inset 3px 0 0 var(--primary);
+}
+
 /* Buttons and Controls styling */
 .btn-primary, .btn-secondary, .btn-success, .btn-danger, .btn-icon {
     display: inline-flex;
     justify-content: center;
     align-items: center;
+    gap: 6px;
     cursor: pointer;
     border: 1px solid transparent;
     border-radius: var(--border-radius-md);
     font-family: var(--font-sans);
     font-weight: 600;
-    transition: background-color 0.15s, border-color 0.15s, opacity 0.15s;
+    transition: background-color 0.15s, border-color 0.15s, opacity 0.15s, transform 0.06s, box-shadow 0.15s;
     font-size: 13px;
     height: 36px;
     padding: 0 16px;
     outline: none;
+    white-space: nowrap;
+}
+
+.btn-primary:active, .btn-secondary:active,
+.btn-success:active, .btn-danger:active, .btn-icon:active {
+    transform: translateY(1px);
+}
+
+.btn-primary:focus-visible, .btn-secondary:focus-visible,
+.btn-success:focus-visible, .btn-danger:focus-visible, .btn-icon:focus-visible {
+    box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.btn-primary:disabled, .btn-secondary:disabled,
+.btn-success:disabled, .btn-danger:disabled, .btn-icon:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
 }
 
 .btn-primary {

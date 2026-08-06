@@ -131,6 +131,12 @@
                         </table>
                     </div>
                     <div class="action-footer">
+                        <div class="annotation-io" style="display: flex; gap: 8px; margin-bottom: 8px;">
+                            <button id="save-annotations-btn" class="btn-secondary w-full" title="Save timing to annotations.json next to the bag">💾 Save</button>
+                            <button id="export-annotations-btn" class="btn-secondary w-full" title="Download timing as a JSON file">⬇ Export</button>
+                            <button id="import-annotations-btn" class="btn-secondary w-full" title="Load timing from a JSON file">⬆ Import</button>
+                        </div>
+                        <input type="file" id="import-annotations-input" accept="application/json,.json" style="display: none;">
                         <button id="convert-btn" class="btn-primary btn-large w-full">Convert & Build Dataset</button>
                     </div>
                 </div>

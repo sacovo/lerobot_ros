@@ -75,6 +75,10 @@ const cancelModalBtn = document.getElementById('cancel-modal-btn');
 const warningBanner = document.getElementById('warning-banner');
 const autoAnnotateBtn = document.getElementById('auto-annotate-btn');
 const cancelAnnotateBtn = document.getElementById('cancel-annotate-btn');
+const saveAnnotationsBtn = document.getElementById('save-annotations-btn');
+const exportAnnotationsBtn = document.getElementById('export-annotations-btn');
+const importAnnotationsBtn = document.getElementById('import-annotations-btn');
+const importAnnotationsInput = document.getElementById('import-annotations-input');
 
 // Playback buttons
 const stepBackLargeBtn = document.getElementById('step-back-large-btn');
@@ -305,6 +309,17 @@ function setupEventListeners() {
     autoAnnotateBtn.addEventListener('click', handleAutoAnnotate);
     cancelAnnotateBtn.addEventListener('click', cancelAutoAnnotate);
 
+    // Annotation timing persistence (save next to bag / export / import file)
+    saveAnnotationsBtn.addEventListener('click', () => saveAnnotations(false));
+    exportAnnotationsBtn.addEventListener('click', exportAnnotations);
+    importAnnotationsBtn.addEventListener('click', () => importAnnotationsInput.click());
+    importAnnotationsInput.addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) importAnnotations(file);
+        // Reset so selecting the same file again re-triggers change
+        e.target.value = '';
+    });
+
     // Global keyboard shortcut Ctrl+H
     window.addEventListener('keydown', (e) => {
         if (e.ctrlKey && e.key.toLowerCase() === 'h') {
@@ -343,8 +358,17 @@ async function loadBag() {
     try {
         const configPath = configPathInput.value.trim();
         const response = await fetch(`/api/bag-info?path=${encodeURIComponent(bagPath)}&config=${encodeURIComponent(configPath)}`);
+
+        // Surface backend errors (FastAPI returns {"detail": ...}) instead of
+        // letting missing fields crash later with an unhelpful message.
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            const errMsg = errData.detail || `HTTP ${response.status} ${response.statusText}`;
+            alert(`Error loading bag: ${errMsg}`);
+            return;
+        }
+
         const data = await response.json();
-        
         if (data.error) {
             alert(`Error loading bag: ${data.error}`);
             return;
@@ -414,6 +438,9 @@ async function loadBag() {
             });
         }
 
+        // Auto-restore any previously saved timing annotations for this bag
+        await loadSavedAnnotations();
+
         // Load the first frame
         loadFrame(0);
 
@@ -470,7 +497,7 @@ async function loadFrame(timeSec) {
         }
 
         // 2. Update Telemetry Table
-        updateTelemetryTable(data.telemetry);
+        updateTelemetryTable(data.telemetry, data.telemetry_meta);
 
         // 3. Update Graph Points & Render Graph
         updateGraphData(timeSec, data.telemetry);
@@ -489,8 +516,28 @@ async function loadFrame(timeSec) {
     }
 }
 
+// Format a single telemetry (dataset feature) value onto one line.
+function formatTelemetryValue(val) {
+    if (typeof val === 'number') {
+        return Number.isInteger(val) ? val.toString() : val.toFixed(4);
+    }
+    if (Array.isArray(val)) {
+        return `[${val.map(formatTelemetryValue).join(', ')}]`;
+    }
+    if (typeof val === 'object' && val !== null) {
+        return JSON.stringify(val);
+    }
+    return String(val);
+}
+
+// Escape a string for safe use inside an HTML attribute (e.g. title="...").
+function escapeAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
 // Update the telemetry display table
-function updateTelemetryTable(telemetry) {
+function updateTelemetryTable(telemetry, telemetryMeta) {
+    telemetryMeta = telemetryMeta || {};
     if (!telemetry || Object.keys(telemetry).length === 0) {
         telemetryTable.innerHTML = `
             <thead>
@@ -509,27 +556,38 @@ function updateTelemetryTable(telemetry) {
 
     let tbodyHtml = '';
     for (const [topic, data] of Object.entries(telemetry)) {
+        const displayTopic = topic.startsWith('/') ? topic : '/' + topic.replace(/\./g, '/');
+        const meta = telemetryMeta[topic] || {};
+        const status = meta.status || 'live';
+
+        // Sparse, event-driven topics (e.g. a velocity "Set") show their latched
+        // value between messages -- exactly what lands in every dataset frame.
+        // Flag those rows so a held/default value isn't mistaken for a fresh one.
+        let badge = '';
+        let rowClass = '';
+        if (status === 'held') {
+            const ageStr = (typeof meta.age === 'number') ? ` (last changed ${meta.age.toFixed(1)}s ago)` : '';
+            badge = `<span class="tele-badge tele-badge-held" title="${escapeAttr('Latched: no new message at this frame' + ageStr + '. This held value is written into every frame until it changes.')}">held</span>`;
+            rowClass = 'tele-row-stale';
+        } else if (status === 'default') {
+            badge = `<span class="tele-badge tele-badge-default" title="${escapeAttr('No message yet at this time. The export pads this feature with zeros until the first message.')}">default</span>`;
+            rowClass = 'tele-row-stale';
+        }
+
         tbodyHtml += `
             <tr class="topic-header-row">
-                <td colspan="2" style="background: rgba(255,255,255,0.02); font-weight:700;">${topic.startsWith('/') ? topic : '/' + topic.replace(/\./g, '/')}</td>
+                <td colspan="2" style="background: rgba(255,255,255,0.02); font-weight:700;">${displayTopic}${badge}</td>
             </tr>`;
-        
-        for (const [key, val] of Object.entries(data)) {
-            let valStr = '';
-            if (Array.isArray(val)) {
-                valStr = `[${val.map(x => typeof x === 'number' ? x.toFixed(4) : x).join(', ')}]`;
-            } else if (typeof val === 'object' && val !== null) {
-                valStr = JSON.stringify(val);
-            } else if (typeof val === 'number') {
-                valStr = val.toFixed(4);
-            } else {
-                valStr = val.toString();
-            }
 
+        for (const [key, val] of Object.entries(data)) {
+            const valStr = formatTelemetryValue(val);
+            // Value is kept on a single line; the cell clips with an ellipsis (full
+            // value available on hover) so scrubbing never changes the row height or
+            // the panel size -- see .tele-val in style.css.
             tbodyHtml += `
-                <tr>
+                <tr class="${rowClass}">
                     <td style="padding-left: 24px; color: var(--text-secondary);">${key}</td>
-                    <td><pre>${valStr}</pre></td>
+                    <td class="tele-val" title="${escapeAttr(valStr)}">${valStr}</td>
                 </tr>`;
         }
     }
@@ -865,6 +923,10 @@ async function startConversion() {
             return;
         }
 
+        // Persist the timing next to the bag so it survives a config change
+        // and can be reused without re-annotating (best-effort, non-blocking).
+        saveAnnotations(true);
+
         // Start polling status
         setTimeout(pollStatus, 500);
 
@@ -1104,9 +1166,202 @@ function cancelAutoAnnotate() {
         state.autoStartVal = null;
         startTimeInput.value = '';
         endTimeInput.value = '';
-        
+
         cancelAnnotateBtn.style.display = 'none';
         autoAnnotateBtn.textContent = '⏺ Start Episode (Ctrl+H)';
         autoAnnotateBtn.className = 'btn-primary w-full';
     }
+}
+
+// ---------------------------------------------------------------------------
+// Annotation timing persistence (save next to bag / export / import file)
+// The episode timing is intentionally decoupled from the TOML feature config,
+// so you can re-import it and rebuild after adding/removing a topic without
+// having to annotate the bag all over again.
+// ---------------------------------------------------------------------------
+
+// Derive a filesystem-friendly basename from the loaded bag path.
+function bagBaseName() {
+    if (!state.bagPath) return 'bag';
+    const p = state.bagPath.replace(/[\/\\]+$/, '');
+    const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+    return (idx === -1 ? p : p.slice(idx + 1)) || 'bag';
+}
+
+// Build the serializable annotation segments from the current episode list.
+function annotationsPayload() {
+    return state.episodes.map(ep => {
+        const seg = {
+            start_time: ep.start_time,
+            end_time: ep.end_time,
+            task: ep.task
+        };
+        if (ep.success !== undefined && ep.success !== null) {
+            seg.success = ep.success;
+        }
+        return seg;
+    });
+}
+
+// Replace the episode list from a raw array of annotation segments.
+// Returns the number of valid segments loaded. Invalid ones are skipped.
+function setEpisodesFromAnnotations(anns) {
+    if (!Array.isArray(anns)) return 0;
+    const episodes = [];
+    let skipped = 0;
+    anns.forEach(a => {
+        const start = parseFloat(a.start_time);
+        const end = parseFloat(a.end_time);
+        const task = (a.task !== undefined && a.task !== null) ? String(a.task) : '';
+        if (isNaN(start) || isNaN(end) || end <= start || start < 0) {
+            skipped++;
+            return;
+        }
+        const ep = { id: 0, start_time: start, end_time: end, task: task };
+        if (a.success !== undefined && a.success !== null) {
+            ep.success = a.success;
+        }
+        episodes.push(ep);
+    });
+
+    episodes.sort((x, y) => x.start_time - y.start_time);
+    episodes.forEach((ep, idx) => ep.id = idx + 1);
+
+    state.episodes = episodes;
+    // Any in-progress edit no longer refers to a live episode object
+    state.editingEpisode = null;
+    addEpisodeBtn.textContent = 'Save Episode Range';
+    addEpisodeBtn.className = 'btn-success w-full';
+
+    renderEpisodesTable();
+    renderTimelineBlocks();
+
+    if (skipped > 0) {
+        console.warn(`Skipped ${skipped} invalid annotation segment(s) during load.`);
+    }
+    return episodes.length;
+}
+
+// Brief visual confirmation on a button without a blocking dialog.
+function flashButton(btn, text) {
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => { btn.textContent = original; }, 1500);
+}
+
+// Auto-restore annotations saved next to the currently loaded bag.
+async function loadSavedAnnotations() {
+    if (!state.bagPath) return;
+    try {
+        const response = await fetch(`/api/annotations?path=${encodeURIComponent(state.bagPath)}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.exists && Array.isArray(data.annotations) && data.annotations.length > 0) {
+            const n = setEpisodesFromAnnotations(data.annotations);
+            if (n > 0) {
+                console.log(`Restored ${n} saved annotation(s) for this bag.`);
+            }
+        }
+    } catch (err) {
+        console.error('Failed to load saved annotations:', err);
+    }
+}
+
+// Save the current timing to annotations.json next to the bag on the server.
+async function saveAnnotations(silent) {
+    if (!state.bagPath) {
+        if (!silent) alert('Please load a bag file first.');
+        return;
+    }
+    if (state.episodes.length === 0) {
+        if (!silent) alert('There are no episodes to save.');
+        return;
+    }
+    try {
+        const response = await fetch('/api/annotations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                bag_path: state.bagPath,
+                config: configPathInput.value.trim() || null,
+                repo_id: repoIdInput.value.trim() || null,
+                annotations: annotationsPayload()
+            })
+        });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            if (!silent) alert(`Failed to save annotations: ${data.detail || response.statusText}`);
+            return;
+        }
+        if (!silent) flashButton(saveAnnotationsBtn, '✓ Saved');
+    } catch (err) {
+        if (!silent) alert(`Failed to save annotations: ${err.message}`);
+    }
+}
+
+// Download the current timing as a portable JSON file.
+function exportAnnotations() {
+    if (!state.bagPath) {
+        alert('Please load a bag file first.');
+        return;
+    }
+    if (state.episodes.length === 0) {
+        alert('There are no episodes to export.');
+        return;
+    }
+    const payload = {
+        version: 1,
+        bag: bagBaseName(),
+        config: configPathInput.value.trim() || null,
+        repo_id: repoIdInput.value.trim() || null,
+        annotations: annotationsPayload()
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `annotations_${bagBaseName()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Load timing from a user-selected JSON file into the episode list.
+function importAnnotations(file) {
+    if (!state.bagPath) {
+        alert('Please load a bag file first, then import.');
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+        let parsed;
+        try {
+            parsed = JSON.parse(reader.result);
+        } catch (err) {
+            alert(`Could not parse JSON file: ${err.message}`);
+            return;
+        }
+        // Accept either a bare array of segments or an object with `annotations`
+        const anns = Array.isArray(parsed) ? parsed : parsed.annotations;
+        if (!Array.isArray(anns)) {
+            alert('Invalid annotations file: expected an array of segments or an object with an "annotations" array.');
+            return;
+        }
+        const n = setEpisodesFromAnnotations(anns);
+        if (n === 0) {
+            alert('No valid annotation segments found in the file.');
+            return;
+        }
+        // Warn (but still import) if segments fall outside the loaded bag
+        const outOfRange = state.episodes.filter(ep => ep.end_time > state.duration + 0.1).length;
+        if (outOfRange > 0) {
+            alert(`Imported ${n} segment(s), but ${outOfRange} extend beyond this bag's duration (${state.duration.toFixed(2)}s). Adjust them before converting.`);
+        } else {
+            flashButton(importAnnotationsBtn, `✓ Imported ${n}`);
+        }
+    };
+    reader.onerror = () => alert('Failed to read the selected file.');
+    reader.readAsText(file);
 }

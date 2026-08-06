@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import os
+import json
 import time
 import base64
 import typing
+import logging
+import threading
 import traceback
 import numpy as np
 import torch
@@ -11,6 +14,8 @@ import yaml
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.staticfiles import StaticFiles
+from fastapi.exception_handlers import http_exception_handler
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 
 import rosbag2_py
@@ -39,6 +44,25 @@ args.bag_root = os.path.abspath(args.bag_root)
 app = FastAPI(title="LeRobot Bag Annotator")
 app.state.bag_root = args.bag_root
 app.state.default_config = args.config
+
+logger = logging.getLogger("lerobot_ros.annotation_server")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _log_and_handle_http_exception(request, exc: StarletteHTTPException):
+    """Log 4xx/5xx detail before returning it.
+
+    FastAPI's default handler only emits the access-log line for an
+    HTTPException, so the actual reason (exc.detail) never reaches the server
+    log. Log it here, then delegate to the default JSON response so clients
+    still receive {"detail": ...}.
+    """
+    if exc.status_code >= 400:
+        logger.warning(
+            "%s %s -> %d: %s",
+            request.method, request.url.path, exc.status_code, exc.detail,
+        )
+    return await http_exception_handler(request, exc)
 
 # Path-traversal protection helper
 def validate_path_under_root(path: str):
@@ -119,10 +143,16 @@ def setup_bag_reader(path: str, cfg_path: str):
                     break
                     
         if not bag_to_config_map:
+            cfg_topic_list = ", ".join(sorted(cfg.topics.keys())) or "(none)"
+            bag_topic_list = ", ".join(sorted(topic_types.keys())) or "(none resolved)"
             raise HTTPException(
                 status_code=400,
-                detail="No topics in the configuration file match the topics in the loaded bag file. "
-                       "Please ensure you have entered the correct TOML Config path."
+                detail=(
+                    "No topics in the configuration file match the topics in the loaded bag. "
+                    "Check that the TOML config path is correct for this bag.\n"
+                    f"Config expects: {cfg_topic_list}\n"
+                    f"Bag provides: {bag_topic_list}"
+                )
             )
             
         metadata_path = os.path.join(path, "metadata.yaml")
@@ -139,7 +169,19 @@ def setup_bag_reader(path: str, cfg_path: str):
             "bag_to_config_map": bag_to_config_map,
             "start_time_ns": start_time_ns,
             "duration_sec": duration_sec,
-            "cfg": cfg
+            "cfg": cfg,
+            # Serialize access to the shared SequentialReader: sync endpoints run
+            # in a threadpool and could otherwise interleave seeks/reads.
+            "lock": threading.Lock(),
+            # Incremental "latch" cursor for /api/frame. Mirrors how the dataset
+            # export carries the most recent message of every topic forward into
+            # every frame. Advanced in place on forward scrubbing/playback (O(1)
+            # per frame); reset and replayed from the start only on a backward
+            # seek. See _advance_latch.
+            "latch_pos_ns": None,          # bag consumed up to (and incl.) here
+            "latch_latest": {},            # config_topic -> (msg_data, bag_topic)
+            "latch_last_update_ns": {},    # config_topic -> timestamp of that msg
+            "latch_pending": None,         # one read-ahead (topic, data, ts)
         }
     except HTTPException:
         raise
@@ -261,42 +303,125 @@ def get_bag_info(path: str = Query(..., description="Absolute path to the bag di
         "config_topics": config_topics
     }
 
+def _advance_latch(bag_data: dict, target_ts_ns: int):
+    """Return the latched (most-recent-at-or-before target) message and update
+    time for every configured topic, mirroring the dataset export.
+
+    The export replays a bag start-to-finish and keeps the last message of each
+    topic in ``latest_msgs``, so a sparse, event-driven topic (e.g. a velocity
+    "Set" published only when it changes) keeps contributing its held value to
+    every frame. This reproduces that here for the annotation preview.
+
+    The scan state lives on ``bag_data`` and is advanced in place: a forward
+    request continues reading from where the previous one stopped (O(1) per
+    frame during playback); only a backward seek resets and replays from the
+    start of the bag. Must be called while holding ``bag_data["lock"]``.
+    """
+    reader = bag_data["reader"]
+    bag_to_config_map = bag_data["bag_to_config_map"]
+    start_time_ns = bag_data["start_time_ns"]
+
+    pos = bag_data["latch_pos_ns"]
+    if pos is None or target_ts_ns < pos:
+        # First request, or scrubbing backwards -> replay from the start.
+        reader.seek(start_time_ns)
+        bag_data["latch_latest"] = {}
+        bag_data["latch_last_update_ns"] = {}
+        bag_data["latch_pending"] = None
+
+    latest = bag_data["latch_latest"]
+    last_update = bag_data["latch_last_update_ns"]
+
+    def _apply(topic_name, data, ts):
+        if topic_name in bag_to_config_map:
+            config_topic = bag_to_config_map[topic_name]
+            latest[config_topic] = (data, topic_name)
+            last_update[config_topic] = ts
+
+    # A message previously read one step past the old target may now be in range.
+    pending = bag_data["latch_pending"]
+    if pending is not None:
+        p_topic, p_data, p_ts = pending
+        if p_ts <= target_ts_ns:
+            _apply(p_topic, p_data, p_ts)
+            bag_data["latch_pending"] = None
+        else:
+            bag_data["latch_pos_ns"] = target_ts_ns
+            return latest, last_update
+
+    while reader.has_next():
+        topic_name, data, ts = reader.read_next()
+        if ts > target_ts_ns:
+            # Remember it so the next forward request doesn't have to re-seek.
+            bag_data["latch_pending"] = (topic_name, data, ts)
+            break
+        _apply(topic_name, data, ts)
+
+    bag_data["latch_pos_ns"] = target_ts_ns
+    return latest, last_update
+
+
 @app.get("/api/frame")
 def get_frame(path: str = Query(...), time: float = Query(...), config: typing.Optional[str] = Query(None)):
     validate_path_under_root(path)
-    
+
     bag_data = get_bag_reader_cached(path, config)
-    reader = bag_data["reader"]
     topic_types = bag_data["topic_types"]
-    bag_to_config_map = bag_data["bag_to_config_map"]
     start_time_ns = bag_data["start_time_ns"]
     cfg = bag_data["cfg"]
-    
+
     try:
         target_ts_ns = start_time_ns + int(time * 1e9)
-        
-        seek_ts_ns = max(start_time_ns, target_ts_ns - int(1.0 * 1e9))
-        reader.seek(seek_ts_ns)
-        
-        latest_msgs = {}
-        while reader.has_next():
-            topic_name, msg_data, timestamp = reader.read_next()
-            if timestamp > target_ts_ns:
-                if len(latest_msgs) > 0 or timestamp > target_ts_ns + int(2.0 * 1e9):
-                    break
-            if topic_name in bag_to_config_map:
-                latest_msgs[bag_to_config_map[topic_name]] = (msg_data, topic_name)
-                
+
+        with bag_data["lock"]:
+            latest_msgs, last_update_ns = _advance_latch(bag_data, target_ts_ns)
+            # Snapshot so decoding happens outside the mutating scan state.
+            latest_msgs = dict(latest_msgs)
+            last_update_ns = dict(last_update_ns)
+
+        # One dataset-frame period; a value not refreshed within it is being
+        # held (latched) into this frame rather than freshly sampled here.
+        fps = getattr(cfg, "fps", 0) or 0
+        frame_period_ns = int(1e9 / fps) if fps else 0
+
         cameras = {}
         telemetry = {}
+        # Parallel per-topic status the GUI uses to flag held/default values,
+        # without changing the {topic: {feature: value}} telemetry shape.
+        #   "live"    -> refreshed at (or within one frame of) this timestamp
+        #   "held"    -> latched from an earlier message; written to every frame
+        #   "default" -> no message yet; the export pads this with zeros
+        telemetry_meta = {}
         warnings = []
-        
-        for config_topic_name, (msg_data, bag_topic_name) in latest_msgs.items():
-            topic_converter = cfg.topics[config_topic_name]
+
+        for config_topic_name, topic_converter in cfg.topics.items():
+            is_image = isinstance(topic_converter, (ImageTopic, ImageCompressedTopic))
+            entry = latest_msgs.get(config_topic_name)
+
+            if entry is None:
+                # Not yet seen at this time. Images just keep their last frame;
+                # numeric topics show the zero pad the export would write, so
+                # the pane still lists a value in every frame.
+                if not is_image:
+                    try:
+                        desc = topic_converter.feature_description()
+                        names = desc.get("names") or []
+                        shape = desc.get("shape", (1,))
+                        n = shape[0] if shape else 1
+                        telemetry[config_topic_name] = {
+                            (names[i] if i < len(names) else f"[{i}]"): 0.0
+                            for i in range(n)
+                        }
+                        telemetry_meta[config_topic_name] = {"status": "default", "age": None}
+                    except Exception as e:
+                        warnings.append(f"Error building default for {config_topic_name}: {str(e)}")
+                continue
+
+            msg_data, bag_topic_name = entry
             msg_class = topic_types[bag_topic_name]
             try:
                 msg = deserialize_message(msg_data, msg_class)
-                if isinstance(topic_converter, (ImageTopic, ImageCompressedTopic)):
+                if is_image:
                     if isinstance(topic_converter, ImageCompressedTopic):
                         np_arr = np.frombuffer(bytes(msg.data), dtype=np.uint8)
                         bgr_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
@@ -310,16 +435,36 @@ def get_frame(path: str = Query(...), time: float = Query(...), config: typing.O
 
                     cameras[config_topic_name] = bgr_to_base64_jpeg(bgr_img)
                 else:
-                    telemetry[config_topic_name] = ros_message_to_dict(msg)
+                    # Show exactly what the dataset will contain for this topic --
+                    # the converter's feature values (after any input transform),
+                    # labeled by the dataset feature names -- rather than the full
+                    # raw bag message. This keeps the panel in sync with the columns
+                    # that actually get written to the LeRobot dataset.
+                    tensor = topic_converter.to_tensor(msg)
+                    flat = tensor.flatten().tolist()
+                    names = topic_converter.feature_description().get("names") or [
+                        f"{config_topic_name}[{i}]" for i in range(len(flat))
+                    ]
+                    telemetry[config_topic_name] = {
+                        (names[i] if i < len(names) else f"[{i}]"): flat[i]
+                        for i in range(len(flat))
+                    }
+                    age_ns = target_ts_ns - last_update_ns[config_topic_name]
+                    held = frame_period_ns > 0 and age_ns > frame_period_ns
+                    telemetry_meta[config_topic_name] = {
+                        "status": "held" if held else "live",
+                        "age": age_ns / 1e9,
+                    }
             except Exception as e:
                 warn_msg = f"Error decoding topic {config_topic_name}: {str(e)}"
                 print(warn_msg)
                 warnings.append(warn_msg)
-                
+
         return {
             "timestamp": time,
             "cameras": cameras,
             "telemetry": telemetry,
+            "telemetry_meta": telemetry_meta,
             "warnings": warnings
         }
     except Exception as e:
@@ -521,6 +666,59 @@ def cancel_convert():
 @app.get("/api/status")
 def get_status():
     return conversion_status
+
+# Annotation timing persistence (decoupled from the TOML config, so segments
+# can be reused after the feature/topic config changes). Stored as a small
+# JSON file inside the bag directory next to metadata.yaml.
+ANNOTATIONS_FILENAME = "annotations.json"
+ANNOTATIONS_VERSION = 1
+
+class SaveAnnotationsRequest(BaseModel):
+    bag_path: str
+    annotations: list[AnnotationSegment]
+    # Optional context, stored for convenience so a reopened file knows which
+    # dataset/config it was last built with. Not required to rebuild.
+    repo_id: typing.Optional[str] = None
+    config: typing.Optional[str] = None
+
+@app.get("/api/annotations")
+def get_annotations(path: str = Query(..., description="Absolute path to the bag directory")):
+    validate_path_under_root(path)
+    ann_path = os.path.join(path, ANNOTATIONS_FILENAME)
+    if not os.path.exists(ann_path):
+        return {"exists": False, "annotations": []}
+    try:
+        with open(ann_path, "r") as f:
+            data = json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read {ANNOTATIONS_FILENAME}: {str(e)}")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail=f"Malformed {ANNOTATIONS_FILENAME}: expected a JSON object.")
+    return {
+        "exists": True,
+        "annotations": data.get("annotations", []),
+        "repo_id": data.get("repo_id"),
+        "config": data.get("config"),
+    }
+
+@app.post("/api/annotations")
+def save_annotations(req: SaveAnnotationsRequest):
+    validate_path_under_root(req.bag_path)
+    if not os.path.isdir(req.bag_path):
+        raise HTTPException(status_code=404, detail=f"Bag directory not found: {req.bag_path}")
+    ann_path = os.path.join(req.bag_path, ANNOTATIONS_FILENAME)
+    payload = {
+        "version": ANNOTATIONS_VERSION,
+        "repo_id": req.repo_id,
+        "config": req.config,
+        "annotations": [a.model_dump() for a in req.annotations],
+    }
+    try:
+        with open(ann_path, "w") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write {ANNOTATIONS_FILENAME}: {str(e)}")
+    return {"status": "saved", "path": ann_path, "count": len(req.annotations)}
 
 # Serve static files from the gui directory at the root URL
 gui_dir = os.path.join(os.path.dirname(__file__), "gui")
