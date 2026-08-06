@@ -236,6 +236,63 @@ ros2 run so101 leader_node --ros-args \
 ros2 launch so101 so101.py config:=config/so101/params.yml
 ```
 
+## Annotation GUI
+
+Instead of splitting a bag by a task topic, you can annotate episode ranges
+interactively in a browser. Start the server (a dev-side tool) and open the
+printed URL:
+
+```bash
+ros2 run lerobot_ros annotation_gui -- --bag-root data --config config/so101/so101.toml
+```
+
+Scrub the timeline, mark start/end times per episode, then **Convert & Build
+Dataset**. The episode **timing** is stored independently of the feature/topic
+config, so you can reuse it after changing the config (e.g. adding a new topic
+as a feature) without re-annotating:
+
+- **Auto-save**: converting writes `annotations.json` into the bag directory,
+  and reloading that bag restores its episodes automatically.
+- **Save / Export / Import** buttons let you write `annotations.json` on demand,
+  download the timing as a portable JSON file, or load one into the GUI.
+
+To rebuild with a changed config: edit the TOML, reload the same bag (the saved
+timing is restored), and convert again.
+
+## Development & Testing
+
+Tests live under `test/`. Two kinds of test dependencies are needed:
+
+- **Python** — `pytest` (a base dependency) plus, for the annotation-server
+  tests, `fastapi`, `uvicorn` and `httpx` (FastAPI's `TestClient`). Those three
+  live in the `dev` dependency group in `pyproject.toml`, since the annotation
+  GUI is a dev-side tool; install the group with:
+
+  ```bash
+  uv pip install ./lerobot_ros --group dev
+  # or, with a uv-managed project: `uv sync` (installs the dev group by default)
+  ```
+
+  The ROS-side test deps (`rclpy`, `rosbag2_py`, `std_msgs`) come from the
+  sourced ROS install, not pip. `fastapi`/`uvicorn` are intentionally absent
+  from the lean rover/Jetson image, so the annotation-server tests skip there
+  and run in the dev container instead.
+
+- **Node.js** — used to syntax-check / lint the annotation GUI's static JS, e.g.
+  `node --check lerobot_ros/gui/app.js`. The GUI is vanilla JS (no bundler).
+
+Both `nodejs`/`npm` (via `docker/apt-dev.txt`) and the Python test deps are
+provided in the dev container (`docker/Dockerfile.dev`); rebuild the dev image
+to pick them up. Run the tests with:
+
+```bash
+# ROS-aware suite (annotation server, bag → dataset), from the workspace root
+colcon test --packages-select lerobot_ros && colcon test-result --verbose
+
+# or directly with pytest, once ROS + the workspace are sourced
+python -m pytest src/lerobot_ros/test
+```
+
 ## About
 
 This package is developed as part of the the [FHNW Rover](https://www.fhnw.ch/plattformen/erc-rover/blog/) project.

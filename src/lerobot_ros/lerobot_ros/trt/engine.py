@@ -19,32 +19,70 @@ def convert_onnx_to_fp16(src_path: str, dst_path: str):
     parser strictly validates elementwise/matmul input types (no implicit promotion),
     so it rejects those edges (``ElementWiseOperation DIV must have same input types``).
 
-    Fix: convert *everything* to FP16 (``keep_io_types=False``) and then rewrite the
+    Fix: convert *everything* to FP16 (``keep_io_types=False``) and then flatten the
     residual ``Cast(to=FLOAT)`` nodes — emitted for dynamic-dimension math like
     ``1.0 / num_patches`` — to ``Cast(to=FLOAT16)``. The result is type-consistent and
     builds as a STRONGLY_TYPED engine. The engine I/O is therefore FP16;
     ``TRTEngineRunner`` casts host-provided tensors to the expected dtype so callers
     still hand it FP32 noise/state/timestep unchanged.
 
-    Handles models with external weight data (the SmolVLM backbone is > 1 GB).
+    Two subtleties, both of which TensorRT rejects the graph over if skipped:
+
+    * Shape inference has to run first. ``convert_float_to_float16`` can only place
+      the fp32/fp16 boundary casts where it knows tensor types; with inference off it
+      leaves the ops in ``DEFAULT_OP_BLOCK_LIST`` (Resize, Range, CumSum, ...) with
+      FP32 outputs, which then propagate through type-agnostic ops (Pad, Unsqueeze)
+      into FP16 arithmetic — ``ElementWiseOperation PROD must have same input types.
+      But they are of types Float and Half``.
+    * The flattening must not touch casts feeding those blocked ops. They are there
+      on purpose and TensorRT agrees with them: its Range importer takes only
+      int32/int64/fp32 and rejects FP16 with ``UNSUPPORTED_NODE: (isInt32 ||
+      isInt64 || isFp32)``.
+
+    Handles models with external weight data (the SmolVLM backbone is > 1 GB), which
+    is why shape inference goes through the file-based ``infer_shapes_path``: the
+    in-memory entry point cannot carry a model past the 2 GB protobuf limit.
     """
     import onnx
     from onnxconverter_common import float16
 
-    model = onnx.load(src_path, load_external_data=True)
+    # Written beside the source so the external-data references, which are
+    # relative to the model file, still resolve from the inferred copy.
+    inferred_path = f"{os.path.splitext(src_path)[0]}_inferred.onnx"
+    onnx.shape_inference.infer_shapes_path(src_path, inferred_path, strict_mode=False)
+    try:
+        model = onnx.load(inferred_path, load_external_data=True)
+    finally:
+        if os.path.exists(inferred_path):
+            os.remove(inferred_path)
+
     fp16_model = float16.convert_float_to_float16(
         model,
         keep_io_types=False,
-        disable_shape_infer=True,
+        disable_shape_infer=False,
     )
-    rewritten = 0
+
+    blocked_ops = set(float16.DEFAULT_OP_BLOCK_LIST)
+    consumers = {}
     for node in fp16_model.graph.node:
-        if node.op_type == "Cast":
-            for attr in node.attribute:
-                if attr.name == "to" and attr.i == int(onnx.TensorProto.FLOAT):
-                    attr.i = int(onnx.TensorProto.FLOAT16)
-                    rewritten += 1
-    print(f"Rewrote {rewritten} Cast(FLOAT->FLOAT16) for TRT type consistency")
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    rewritten = kept = 0
+    for node in fp16_model.graph.node:
+        if node.op_type != "Cast":
+            continue
+        if any(c.op_type in blocked_ops for c in consumers.get(node.output[0], [])):
+            kept += 1
+            continue
+        for attr in node.attribute:
+            if attr.name == "to" and attr.i == int(onnx.TensorProto.FLOAT):
+                attr.i = int(onnx.TensorProto.FLOAT16)
+                rewritten += 1
+    print(
+        f"Rewrote {rewritten} Cast(FLOAT->FLOAT16) for TRT type consistency; "
+        f"kept {kept} feeding FP32-only ops"
+    )
     os.makedirs(os.path.dirname(os.path.abspath(dst_path)), exist_ok=True)
     onnx.save(
         fp16_model,

@@ -85,7 +85,14 @@ class FrameAssembler:
                 tensor = topic.to_tensor(msg_or_tensor)
                 
             if key in ["action", "observation.state"]:
-                out_frame[key].append(tensor)
+                # These stacked features are always declared float32 by
+                # get_feature_description(), so cast each contributing tensor to
+                # match. Without this a float64 source topic (e.g. a
+                # Float64MultiArray action) -- or an int observation -- would
+                # make torch.cat promote the whole vector to float64/int and the
+                # dataset writer rejects it ("feature 'action' of dtype
+                # 'float64' is not of the expected dtype 'float32'").
+                out_frame[key].append(tensor.to(torch.float32))
             else:
                 ds_frame[key] = tensor
 

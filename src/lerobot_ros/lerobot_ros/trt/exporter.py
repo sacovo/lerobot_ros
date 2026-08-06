@@ -1,7 +1,56 @@
+import contextlib
 import os
 import torch
 import torch.nn as nn
 from lerobot.policies.smolvla.modeling_smolvla import make_att_2d_masks
+
+# All ONNX exports here go through _onnx_export(), which applies the two
+# workarounds the TensorRT path needs. Both are export-time only -- eager
+# inference is untouched.
+#
+# 1. dynamo=False. torch >= 2.11 defaults torch.onnx.export to the dynamo
+#    exporter, which emits graphs that break ONNX's single-static-assignment
+#    rule for these models: a name such as "val_3" ends up defined BOTH as an
+#    initializer and as the output of a much later node. Nodes consuming the
+#    initializer then look like they depend on that later node, i.e. a backwards
+#    edge, and TensorRT's parser aborts with
+#        Assertion failed: toposort(graph.node(), &topoOrder, subgraphOuterDeps):
+#        Failed to sort the model topologically
+#    onnx.checker rejects the file outright, so this is an invalid export rather
+#    than a TensorRT quirk. optimize=False does not help (it produces *more*
+#    collisions). Drop this once the dynamo exporter stops reusing value names.
+#
+# 2. Bool-safe torch.cumsum. SmolVLA runs cumsum over boolean pad/attention
+#    masks (in our prefix wrapper, and inside lerobot's make_att_2d_masks and
+#    denoise_step). torch promotes bool to int64 implicitly, but the TorchScript
+#    exporter emits CumSum straight onto the Bool tensor and TensorRT refuses:
+#        /CumSum: input has type Bool but must have type Float, Half, BFloat16,
+#        Int64, or Int32
+#    Patching torch.cumsum for the duration of the export covers the call sites
+#    inside lerobot too, which we cannot edit. The cast is a no-op numerically --
+#    int64 is exactly what cumsum would have produced.
+#
+# Verified on Jetson Orin with torch 2.11.0+cu130 / TensorRT 11.2.1.2.
+@contextlib.contextmanager
+def _bool_safe_cumsum():
+    original = torch.cumsum
+
+    def patched(input, *args, **kwargs):
+        if isinstance(input, torch.Tensor) and input.dtype == torch.bool:
+            input = input.to(torch.int64)
+        return original(input, *args, **kwargs)
+
+    torch.cumsum = patched
+    try:
+        yield
+    finally:
+        torch.cumsum = original
+
+
+def _onnx_export(*args, **kwargs):
+    kwargs.setdefault("dynamo", False)
+    with _bool_safe_cumsum():
+        return torch.onnx.export(*args, **kwargs)
 
 class PolicyONNXWrapper(nn.Module):
     def __init__(self, policy, obs_keys):
@@ -28,7 +77,7 @@ def export_act(policy, sample_observation, output_path):
     print(f"Exporting ACT ONNX to {output_path}...")
     print(f"Input keys: {obs_keys}")
 
-    torch.onnx.export(
+    _onnx_export(
         wrapper,
         dummy_tensors,
         output_path,
@@ -70,7 +119,7 @@ def export_episode_tracker(model, sample_batch, output_path):
     print(f"Exporting EpisodeTracker ONNX to {output_path}...")
     print(f"Input keys: {progress_keys}")
 
-    torch.onnx.export(
+    _onnx_export(
         wrapper,
         dummy_tensors,
         output_path,
@@ -365,7 +414,7 @@ def export_smolvla(policy, sample_observation, output_dir):
         output_names.extend([f"key_{i}", f"val_{i}"])
     output_names.append("prefix_pad_masks")
     
-    torch.onnx.export(
+    _onnx_export(
         prefix_wrapper,
         prefix_dummy,
         prefix_onnx_path,
@@ -399,7 +448,7 @@ def export_smolvla(policy, sample_observation, output_dir):
         
         suffix_input_names = ["x_t", "timestep", "prefix_pad_masks"] + output_names[:-1]
         
-    torch.onnx.export(
+    _onnx_export(
         suffix_wrapper,
         suffix_dummy,
         suffix_onnx_path,
