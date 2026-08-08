@@ -68,6 +68,7 @@ class DatasetWriter:
                      metadata consumed by the critic and RECAP training scripts.
         """
         print(f"Writing episode to LeRobot dataset with {len(episode_frames)} frames...")
+        rejected = []
         for i, (frame, _, _) in enumerate(episode_frames):
             frame["task"] = task
             if self.track_intervention and "intervention" not in frame:
@@ -75,7 +76,22 @@ class DatasetWriter:
             try:
                 self.dataset.add_frame(frame)
             except Exception as e:
-                print(f"Failed to add frame {i}: {e}")
+                rejected.append((i, str(e)))
+
+        # A rejected frame means the assembled data does not match the dataset
+        # schema (e.g. an action/observation dtype or shape mismatch). LeRobot
+        # drops every such frame, so if we swallow the error and continue we save
+        # a short or empty episode -- and encoding video from an empty image
+        # buffer wedges ffmpeg in a way that is very hard to kill. Fail loudly
+        # and discard the partial buffer instead of producing a broken dataset.
+        if rejected:
+            first_idx, first_err = rejected[0]
+            self._discard_episode_buffer()
+            raise RuntimeError(
+                f"{len(rejected)}/{len(episode_frames)} frames were rejected by the "
+                f"dataset writer; aborting this episode. First error "
+                f"(frame {first_idx}): {first_err}"
+            )
 
         # Inject success into episode-level metadata by temporarily patching
         # LeRobotDatasetMetadata.save_episode so that success is stored in the
@@ -95,10 +111,27 @@ class DatasetWriter:
         try:
             self.dataset.save_episode()
             print("Episode saved successfully.")
-        except Exception as e:
-            print(f"Failed to save episode: {e}")
+        except Exception:
+            # Don't swallow: a failed save leaves the writer mid-episode, and the
+            # caller must stop rather than finalize a corrupt dataset. Drop the
+            # partial buffer so writer state is clean, then re-raise.
+            self._discard_episode_buffer()
+            raise
         finally:
             meta.save_episode = original_meta_save
+
+    def _discard_episode_buffer(self):
+        """Drop the in-progress episode buffer (and its temp images) after a
+        failed/aborted episode, so the writer is left in a clean state and video
+        encoding is never attempted on a partial buffer."""
+        try:
+            delete_images = len(self.dataset.meta.image_keys) > 0
+        except Exception:
+            delete_images = False
+        try:
+            self.dataset.clear_episode_buffer(delete_images=delete_images)
+        except Exception as e:
+            print(f"Warning: failed to clear episode buffer after aborted episode: {e}")
 
     def finalize(self):
         """Finalize the dataset (Hugging Face files)."""

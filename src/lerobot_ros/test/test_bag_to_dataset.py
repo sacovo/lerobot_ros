@@ -157,3 +157,85 @@ def test_bag_to_dataset_conversion():
 
     finally:
         shutil.rmtree(temp_dir)
+
+
+def test_float64_action_is_coerced_to_float32():
+    """A Float64MultiArray action (e.g. /position_controller/commands) must not
+    make every frame fail with 'feature action of dtype float64 is not float32'.
+
+    FrameAssembler casts the stacked action/observation.state to float32 to match
+    the schema, so the whole episode builds instead of producing an empty buffer
+    that then wedges video encoding.
+    """
+    import torch
+    from lerobot_ros.core import DatasetWriter, FrameAssembler
+    from lerobot_ros.convert.std import Float64MultiArrayTopic, Float32Topic
+    from lerobot_ros.config import ROSFeatureConfig
+
+    temp_dir = tempfile.mkdtemp()
+    try:
+        pos = Float64MultiArrayTopic(
+            names=[f"j{i}" for i in range(6)],
+            topic_name="/position_controller/commands",
+            tag="action", qos={},
+        )
+        grip = Float32Topic(
+            topic_name="/wecant/GRAB/Grip_Man/Set", tag="action", key="grip_man", qos={}
+        )
+        cfg = ROSFeatureConfig(
+            topics={"/position_controller/commands": pos, "/wecant/GRAB/Grip_Man/Set": grip},
+            fps=20, dataset_root=temp_dir,
+        )
+        writer = DatasetWriter("float64_action_ds", cfg, resume=False)
+        assembler = FrameAssembler(cfg.topics)
+
+        frames = []
+        for i in range(20):
+            latest = {
+                "/position_controller/commands": torch.tensor([0.1 * i] * 6, dtype=torch.float64),
+                "/wecant/GRAB/Grip_Man/Set": torch.tensor([1.0], dtype=torch.float32),
+            }
+            frames.append((assembler.assemble(latest), "pick", i / 20.0))
+
+        # Must not raise (previously: every frame rejected -> empty episode).
+        writer.save_episode(frames, "pick", success=True)
+        writer.finalize()
+
+        ds = LeRobotDataset("float64_action_ds", root=os.path.join(temp_dir, "float64_action_ds"))
+        assert ds.meta.total_episodes == 1
+        assert ds.meta.total_frames == 20
+    finally:
+        shutil.rmtree(temp_dir)
+
+
+def test_schema_mismatch_aborts_episode_loudly():
+    """A genuine schema mismatch (wrong action shape) must raise a clear error
+    and leave no pending buffer, instead of silently saving a broken/empty
+    episode that hangs ffmpeg during video encoding."""
+    import torch
+    from lerobot_ros.core import DatasetWriter
+    from lerobot_ros.convert.std import Float32Topic
+    from lerobot_ros.config import ROSFeatureConfig
+
+    temp_dir = tempfile.mkdtemp()
+    try:
+        grip = Float32Topic(
+            topic_name="/wecant/GRAB/Grip_Man/Set", tag="action", key="grip_man", qos={}
+        )
+        cfg = ROSFeatureConfig(
+            topics={"/wecant/GRAB/Grip_Man/Set": grip}, fps=20, dataset_root=temp_dir
+        )
+        writer = DatasetWriter("bad_shape_ds", cfg, resume=False)
+
+        # Schema expects a 1-element action; feed 2 elements so every frame is rejected.
+        frames = [
+            ({"action": torch.tensor([1.0, 2.0], dtype=torch.float32)}, "pick", i / 20.0)
+            for i in range(20)
+        ]
+        with pytest.raises(RuntimeError, match="rejected by the dataset writer"):
+            writer.save_episode(frames, "pick", success=True)
+
+        # Buffer discarded -> writer is clean, not stuck mid-episode.
+        assert not writer.dataset.has_pending_frames()
+    finally:
+        shutil.rmtree(temp_dir)

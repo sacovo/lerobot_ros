@@ -44,6 +44,20 @@ def hl_gauss_target(scalar: torch.Tensor, edges: torch.Tensor, sigma: float) -> 
     return probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-8)
 
 
+def _stat_buffer(values: Optional[list[float]], dim: int, fill: float) -> torch.Tensor:
+    """Build a (dim,) normalization buffer, falling back to ``fill`` when unset.
+
+    Standard deviations are clamped away from zero: a channel that never varies
+    in the dataset has std 0 and would otherwise divide to inf/NaN.
+    """
+    if values is None:
+        return torch.full((dim,), fill, dtype=torch.float32)
+    tensor = torch.as_tensor(list(values), dtype=torch.float32)
+    if tensor.numel() != dim:
+        raise ValueError(f"expected {dim} normalization values, got {tensor.numel()}")
+    return tensor.clamp_min(1e-6) if fill == 1.0 else tensor
+
+
 class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
     """Track episode progress from a short window of images, robot state and actions.
 
@@ -65,6 +79,10 @@ class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
         n_bins: int = 101,
         window: int = 4,
         hl_gauss_sigma_ratio: float = 0.75,
+        state_mean: Optional[list[float]] = None,
+        state_std: Optional[list[float]] = None,
+        action_mean: Optional[list[float]] = None,
+        action_std: Optional[list[float]] = None,
     ) -> None:
         super().__init__()
 
@@ -108,6 +126,25 @@ class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
         self.register_buffer("bin_edges", bin_edges)
         self.hl_gauss_sigma = hl_gauss_sigma_ratio / n_bins
 
+        # State and action feed the GRU directly, so their raw scale matters.
+        # On the rover dataset the state mixes joint efforts (std ~1900) and
+        # gripper (std ~135) with TOF channels (std ~0.04) and projected image
+        # features (order 1) -- about five orders of magnitude. Without this the
+        # GRU is driven almost entirely by the effort channels.
+        #
+        # These are buffers, not preprocessing, so save_pretrained carries them
+        # and inference (policy_controller -> predict_progress) normalizes
+        # identically without knowing the dataset. Defaults are identity, which
+        # keeps the module constructible with no stats (tests, TRT tracing).
+        self.register_buffer(
+            "state_mean", _stat_buffer(state_mean, n_robot_state_inputs, 0.0)
+        )
+        self.register_buffer(
+            "state_std", _stat_buffer(state_std, n_robot_state_inputs, 1.0)
+        )
+        self.register_buffer("action_mean", _stat_buffer(action_mean, n_actions, 0.0))
+        self.register_buffer("action_std", _stat_buffer(action_std, n_actions, 1.0))
+
         total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         logger.info(f"Model initialized with {total_params:,} trainable parameters")
 
@@ -131,8 +168,10 @@ class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
                     feat = feat.view(batch_size, window, MOBILENET_FEATURE_DIM)
                     parts.append(self.image_proj(feat))  # (B, K, proj_dim)
 
-        parts.append(batch[OBS_STATE])  # (B, K, n_state)
-        parts.append(batch[ACTION])  # (B, K, n_action)
+        # Normalized with the buffers above so no single channel's raw scale
+        # dominates the GRU input. Identity when the model was built without stats.
+        parts.append((batch[OBS_STATE] - self.state_mean) / self.state_std)
+        parts.append((batch[ACTION] - self.action_mean) / self.action_std)
 
         sequence = torch.cat(parts, dim=-1)  # (B, K, fusion_dim)
         _, h_n = self.gru(sequence)
@@ -247,6 +286,7 @@ def train_episode_tracker(
     steps: int = 50_000,
     batch_size: int = 32,
     val_interval: int = 500,
+    num_workers: int = 4,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ):
     """Train the episode tracker."""
@@ -263,11 +303,15 @@ def train_episode_tracker(
 
     model.train()
 
+    # Each sample decodes window x n_cameras video frames (4 x 3 = 12 here, so
+    # 384 per batch of 32), which makes this loop decode-bound rather than
+    # GPU-bound. Workers matter far more than the GPU does.
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
         pin_memory=False,
     )
 
@@ -275,7 +319,8 @@ def train_episode_tracker(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
         pin_memory=False,
     )
 
@@ -337,7 +382,14 @@ def train_episode_tracker(
 
                 if val_ce < best_val_loss:
                     best_val_loss = val_ce
-                    best_weights = model.state_dict()
+                    # Clone: state_dict() hands back references to the live
+                    # parameters, so keeping it as-is means the optimizer goes on
+                    # mutating "best_weights" in place. The restore at the end
+                    # then silently loads the FINAL weights rather than the best
+                    # ones, making this whole early-stopping path a no-op.
+                    best_weights = {
+                        k: v.detach().clone() for k, v in model.state_dict().items()
+                    }
                     logger.info(f"New best validation CE: {best_val_loss:.4f}")
 
             step += 1
@@ -381,6 +433,19 @@ def train_episode_tracker(
 @click.option("--val_interval", type=int, default=500, help="Validate every N steps")
 @click.option("--window", type=int, default=4, help="Number of frames in the temporal window")
 @click.option("--n_bins", type=int, default=101, help="Number of HL-Gauss progress bins")
+@click.option(
+    "--num_workers",
+    type=int,
+    default=4,
+    help="Dataloader workers. Each sample decodes window x n_cameras video "
+    "frames, so this dominates throughput; 0 decodes serially in-process.",
+)
+@click.option(
+    "--seed",
+    type=int,
+    default=42,
+    help="Seed for the train/val episode split, so runs stay comparable.",
+)
 @click.option("--log_file", type=str, default=None, help="Optional log file path")
 def main(
     repo_id,
@@ -393,6 +458,8 @@ def main(
     val_interval,
     window,
     n_bins,
+    num_workers,
+    seed,
     log_file,
 ):
     # Add file handler if log file specified
@@ -417,6 +484,8 @@ def main(
     logger.info(f"Validation split: {val_split * 100:.1f}%")
     logger.info(f"Validation interval: {val_interval} steps")
     logger.info(f"Window: {window} frames, bins: {n_bins}")
+    logger.info(f"Dataloader workers: {num_workers}")
+    logger.info(f"Split seed: {seed}")
     logger.info(f"Model will be saved to: {model_repo_id}")
     logger.info(f"Push to hub: {push_to_hub}")
 
@@ -430,6 +499,9 @@ def main(
 
     n_train = int(len(all_episodes) * (1 - val_split))
 
+    # Seeded so the split is reproducible: without it every run validates on a
+    # different set of episodes and the val numbers aren't comparable run to run.
+    random.seed(seed)
     episodes_train = random.sample(all_episodes, n_train)
     episodes_val = list(set(all_episodes) - set(episodes_train))
 
@@ -450,12 +522,26 @@ def main(
     logger.info(f"State dimensions: {n_states}")
     logger.info(f"Action dimensions: {n_actions}")
 
+    # Normalization stats come from the full dataset metadata (not the train
+    # split) and are baked into the model as buffers, so inference applies the
+    # same transform. Plain lists keep them JSON-serializable for the
+    # PyTorchModelHubMixin config written by save_pretrained.
+    def _stat(feature, key):
+        value = ds.meta.stats[feature][key]
+        return [float(x) for x in value]
+
+    logger.info("Normalization: state/action standardized with dataset mean/std")
+
     model = EpisodeTracker(
         n_robot_state_inputs=n_states,
         n_actions=n_actions,
         image_features=image_features,
         window=window,
         n_bins=n_bins,
+        state_mean=_stat(OBS_STATE, "mean"),
+        state_std=_stat(OBS_STATE, "std"),
+        action_mean=_stat(ACTION, "mean"),
+        action_std=_stat(ACTION, "std"),
     )
 
     model = train_episode_tracker(
@@ -465,6 +551,7 @@ def main(
         steps=steps,
         batch_size=batch_size,
         val_interval=val_interval,
+        num_workers=num_workers,
     )
 
     logger.info(f"Saving model to {output_dir}...")
