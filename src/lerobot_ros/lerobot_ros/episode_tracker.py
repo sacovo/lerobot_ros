@@ -96,6 +96,7 @@ class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
         gru_hidden_dim: int = 64,
         n_bins: int = 101,
         window: int = 4,
+        stride: int = 1,
         hl_gauss_sigma_ratio: float = 0.75,
         state_mean: Optional[list[float]] = None,
         state_std: Optional[list[float]] = None,
@@ -107,10 +108,14 @@ class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
         if image_features is None:
             image_features = []
 
+        if stride < 1:
+            raise ValueError(f"stride must be >= 1, got {stride}")
+
         logger.info(
             f"Initializing EpisodeTracker with {n_robot_state_inputs} state inputs, "
             f"{n_actions} actions, image_features={image_features}, proj_dim={proj_dim}, "
-            f"gru_hidden_dim={gru_hidden_dim}, n_bins={n_bins}, window={window}"
+            f"gru_hidden_dim={gru_hidden_dim}, n_bins={n_bins}, window={window}, "
+            f"stride={stride}"
         )
 
         backbone = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.IMAGENET1K_V1)
@@ -123,6 +128,12 @@ class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
         self.image_features = image_features
         self.progress_keys = [*image_features, OBS_STATE, ACTION]
         self.window = window
+        # Frames between consecutive window slots. Carried on the model because
+        # it is part of the trained contract, not a runtime tuning knob: the GRU
+        # learned motion at this spacing, so WindowedProgressDataset and
+        # policy_controller both take it from here rather than being told
+        # separately and drifting apart.
+        self.stride = stride
         self.n_bins = n_bins
 
         # One shared projection (not one per camera): all cameras view the same
@@ -252,18 +263,32 @@ def stack_progress_window(
 
 class WindowedProgressDataset(Dataset):
     """Wraps a per-episode-contiguous dataset to return a window of ``window``
-    consecutive frames ending at each index, clamped to the episode start (early
-    frames repeat the first frame of the episode instead of reaching into the
-    previous one).
+    frames ``stride`` apart ending at each index, clamped to the episode start
+    (early frames repeat the first frame of the episode instead of reaching into
+    the previous one).
+
+    ``stride`` sets the temporal reach of the window, and it is a modelling
+    choice rather than a performance one: at ``stride=1`` a 4-frame window on a
+    20 fps dataset spans 150 ms, which is a thin basis for "how far through the
+    task am I" and for noticing a regression like a dropped object. ``stride=10``
+    spans 1.5 s over the same 4 frames and the same decode cost per sample.
+
+    Whatever is chosen here is baked into what the GRU learns "recent motion"
+    to mean, so inference has to sample at the same spacing -- which is why it
+    lives on the model (``EpisodeTracker.stride``) and the trainer reads it from
+    there rather than taking it separately.
 
     Assumes the wrapped dataset stores frames in increasing ``frame_index`` order
     within each episode (true for a plain ``LeRobotDataset``; not safe to wrap a
     shuffled ``Subset``).
     """
 
-    def __init__(self, dataset, window: int):
+    def __init__(self, dataset, window: int, stride: int = 1):
+        if stride < 1:
+            raise ValueError(f"stride must be >= 1, got {stride}")
         self.dataset = dataset
         self.window = window
+        self.stride = stride
 
     def __len__(self):
         return len(self.dataset)
@@ -271,7 +296,8 @@ class WindowedProgressDataset(Dataset):
     def __getitem__(self, idx: int):
         episode_start = idx - int(self.dataset[idx]["frame_index"].item())
         indices = [
-            max(episode_start, idx - (self.window - 1 - j)) for j in range(self.window)
+            max(episode_start, idx - self.stride * (self.window - 1 - j))
+            for j in range(self.window)
         ]
         frames = [self.dataset[i] for i in indices]
 
@@ -341,8 +367,10 @@ def train_episode_tracker(
     logger.info(f"Starting training for {steps} steps with batch_size={batch_size}")
     logger.info(f"Using device: {device}")
 
-    train_dataset = WindowedProgressDataset(dataset, model.window)
-    val_dataset = WindowedProgressDataset(dataset_val, model.window)
+    # Window geometry comes off the model, so what the checkpoint claims and
+    # what it was trained on cannot diverge.
+    train_dataset = WindowedProgressDataset(dataset, model.window, model.stride)
+    val_dataset = WindowedProgressDataset(dataset_val, model.window, model.stride)
 
     model = model.to(device)
     episode_lengths = torch.tensor(dataset.meta.episodes["length"], device=device)
@@ -479,6 +507,15 @@ def train_episode_tracker(
 )
 @click.option("--val_interval", type=int, default=500, help="Validate every N steps")
 @click.option("--window", type=int, default=4, help="Number of frames in the temporal window")
+@click.option(
+    "--stride",
+    type=int,
+    default=1,
+    help="Frames between window slots. window x stride sets the temporal reach: "
+    "at 20 fps, window=4 stride=1 sees 150 ms, stride=10 sees 1.5 s for the same "
+    "decode cost. Inference must sample at this spacing, so it is stored on the "
+    "checkpoint.",
+)
 @click.option("--n_bins", type=int, default=101, help="Number of HL-Gauss progress bins")
 @click.option(
     "--num_workers",
@@ -504,6 +541,7 @@ def main(
     val_split,
     val_interval,
     window,
+    stride,
     n_bins,
     num_workers,
     seed,
@@ -530,7 +568,7 @@ def main(
     logger.info(f"Batch size: {batch_size}")
     logger.info(f"Validation split: {val_split * 100:.1f}%")
     logger.info(f"Validation interval: {val_interval} steps")
-    logger.info(f"Window: {window} frames, bins: {n_bins}")
+    logger.info(f"Window: {window} frames, stride: {stride}, bins: {n_bins}")
     logger.info(f"Dataloader workers: {num_workers}")
     logger.info(f"Split seed: {seed}")
     logger.info(f"Model will be saved to: {model_repo_id}")
@@ -589,6 +627,7 @@ def main(
         n_actions=n_actions,
         image_features=image_features,
         window=window,
+        stride=stride,
         n_bins=n_bins,
         state_mean=_stat(OBS_STATE, "mean"),
         state_std=_stat(OBS_STATE, "std"),

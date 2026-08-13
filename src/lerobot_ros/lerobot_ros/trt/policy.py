@@ -108,6 +108,10 @@ class EpisodeTrackerTRTPolicy:
         self.progress_keys = original_model.progress_keys
         self.bin_centers = original_model.bin_centers
         self.window = original_model.window
+        # Window geometry is not in the engine (the graph just takes a (B, K, ...)
+        # tensor), so it has to be carried across or policy_controller would fall
+        # back to sampling every tick for a TRT-backed tracker.
+        self.stride = getattr(original_model, "stride", 1)
 
     def forward(self, batch: dict) -> torch.Tensor:
         inputs = {}

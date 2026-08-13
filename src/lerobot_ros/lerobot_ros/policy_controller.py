@@ -114,6 +114,11 @@ class PolicyController:
         # so the estimator in use can never go stale relative to the active policy.
         self.progress_models: Dict[str, EpisodeTracker] = {}
         self.progress_windows: Dict[str, deque] = {}
+        # Collected frames seen since the run started, per policy. The tracker's
+        # window is sampled every EpisodeTracker.stride of these, so the spacing
+        # the GRU sees at inference matches the spacing it was trained on.
+        # Only predict_loop touches this, so a plain int needs no lock.
+        self.progress_ticks: Dict[str, int] = {}
 
         # Parameters
         self.task_completion_threshold = (
@@ -256,6 +261,7 @@ class PolicyController:
             self._latest_progress = 0.0
             if policy_name in self.progress_windows:
                 self.progress_windows[policy_name].clear()
+                self.progress_ticks[policy_name] = 0
             self.action_queue.clear()
             self.collect_frames = True
             self.convertor.set_active(True)
@@ -622,16 +628,28 @@ class PolicyController:
 
             progress_model = self.progress_models.get(self.active_policy_name)
             if progress_model is not None:
-                with torch.inference_mode():
-                    progress_frame = {
-                        key: observation[key]
-                        for key in progress_model.progress_keys
-                        if key in observation
-                    }
-                    window = self.progress_windows[self.active_policy_name]
-                    window.append(progress_frame)
-                    windowed = stack_progress_window(window, progress_model.window)
-                    self._latest_progress = progress_model.predict_progress(windowed).item()
+                # Sample on the trained spacing rather than every tick: a model
+                # trained with stride=10 learned what 500 ms of motion looks
+                # like between slots, and feeding it consecutive frames would
+                # hand it a 10x shorter history than it has ever seen.
+                progress_name = self.active_policy_name
+                tick = self.progress_ticks.get(progress_name, 0)
+                self.progress_ticks[progress_name] = tick + 1
+                stride = getattr(progress_model, "stride", 1)
+
+                if tick % stride == 0:
+                    with torch.inference_mode():
+                        progress_frame = {
+                            key: observation[key]
+                            for key in progress_model.progress_keys
+                            if key in observation
+                        }
+                        window = self.progress_windows[progress_name]
+                        window.append(progress_frame)
+                        windowed = stack_progress_window(window, progress_model.window)
+                        self._latest_progress = progress_model.predict_progress(
+                            windowed
+                        ).item()
 
             remaining_actions = len(self.action_queue)
 
