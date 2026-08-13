@@ -31,6 +31,20 @@ from lerobot.policies.smolvla.modeling_smolvla import make_att_2d_masks
 #    inside lerobot too, which we cannot edit. The cast is a no-op numerically --
 #    int64 is exactly what cumsum would have produced.
 #
+# 3. do_constant_folding=False. ACT allocates its inference-time VAE latent as
+#    torch.zeros(...).to(batch[OBS_STATE].device) (lerobot modeling_act.py), i.e.
+#    a CPU tensor followed by a device move. Tracing records that literally, so
+#    the graph carries a CPU constant alongside CUDA weights and the folding pass
+#    dies on the pair:
+#        RuntimeError: Expected all tensors to be on the same device, but found
+#        at least two devices, cuda:0 and cpu!
+#    (raised from _jit_pass_onnx_constant_fold; the same mismatch also shows up
+#    earlier as a "Constant folding in symbolic shape inference fails" warning).
+#    The call site is inside lerobot, so we cannot move the allocation. Skipping
+#    torch's folding costs nothing here: TensorRT's builder constant-folds the
+#    parsed network itself, so the built engine is unchanged -- only the
+#    intermediate .onnx keeps a few more foldable nodes.
+#
 # Verified on Jetson Orin with torch 2.11.0+cu130 / TensorRT 11.2.1.2.
 @contextlib.contextmanager
 def _bool_safe_cumsum():
@@ -50,6 +64,7 @@ def _bool_safe_cumsum():
 
 def _onnx_export(*args, **kwargs):
     kwargs.setdefault("dynamo", False)
+    kwargs.setdefault("do_constant_folding", False)
     with _bool_safe_cumsum():
         return torch.onnx.export(*args, **kwargs)
 
