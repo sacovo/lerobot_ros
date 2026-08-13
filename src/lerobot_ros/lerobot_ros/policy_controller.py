@@ -212,6 +212,7 @@ class PolicyController:
         else:
             self._synthetic_thread = None
             self.convertor.register_frame_callback(self.frame_callback)
+            self.convertor.register_frame_gate(self.needs_frame)
             self.convertor.setup_subscribers()
 
         self.publisher_thread = threading.Thread(target=self.publisher_loop, daemon=True)
@@ -550,6 +551,43 @@ class PolicyController:
             time.sleep(max(0.0, next_tick - time.time()))
             next_tick += delta_t
 
+    def needs_frame(self) -> bool:
+        """Whether the next collected frame is worth converting to tensors.
+
+        Runs on the subscriber's processing thread, before it decodes anything.
+        predict_loop skips inference entirely while the action queue is still
+        above action_queue_size -- with the deployed chunk sizes that is
+        roughly 24 ticks in 25 -- so a frame converted for one of those ticks
+        is decoded, assembled and then dropped. Gating on the same condition
+        keeps three JPEG decodes off those ticks, measured at ~23 ms per tick
+        in docs/live-ros-transport-benchmark.md.
+
+        A progress estimator changes the answer: it consumes a frame every tick
+        to fill its rolling window, so while one is loaded every frame is
+        genuinely needed and this returns True unconditionally.
+        """
+        # Single read of the active policy: the property pair
+        # (has_active_policy, active_config) can disagree if the goal ends
+        # between them, and active_config raises when there is none.
+        name = self.active_policy_name
+        if name is None or name not in self.policies or not self.collect_frames:
+            return False
+
+        if self.progress_models.get(name) is not None:
+            return True
+
+        config = self.config.policies.get(name)
+        if config is None:
+            return True
+
+        # deque.__len__ is atomic, but predict_loop and publisher_loop mutate
+        # the queue while this runs, so treat it as a hint. It can only shrink
+        # between here and predict_loop (it refills solely on inference), so a
+        # frame that passes this gate is still wanted when it arrives; the
+        # opposite error costs one tick of delay against a queue holding
+        # action_queue_size ticks of buffered motion.
+        return len(self.action_queue) <= config.action_queue_size
+
     def frame_callback(self, observation, t):
         if not self.has_active_policy or not self.collect_frames:
             return
@@ -827,6 +865,15 @@ class PolicyController:
             p95 = sorted_v[int(n * 0.95)]
             p99 = sorted_v[int(n * 0.99)]
             return {"n": n, "avg": avg, "min": mn, "max": mx, "p50": p50, "p95": p95, "p99": p99}
+
+        converted = self.convertor.frames_converted
+        skipped = self.convertor.frames_skipped
+        if converted or skipped:
+            total = converted + skipped
+            self.node.get_logger().info(
+                f"[benchmark] {'frames':>12}: converted={converted}  skipped={skipped}  "
+                f"({100.0 * skipped / total:.1f}% of decode work avoided)"
+            )
 
         keys = ["preprocess", "inference", "postprocess", "blend", "publish"]
         for key in keys:

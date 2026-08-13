@@ -52,6 +52,13 @@ class Ros2Feature:
         # in lockstep with its own collect_frames flag.
         self.active = False
 
+        # Optional finer-grained gate on top of .active, registered by the
+        # consumer via register_frame_gate(). .active answers "is anyone
+        # listening at all"; this answers "can the listener use *this* tick".
+        self.frame_gate = None
+        self.frames_converted = 0
+        self.frames_skipped = 0
+
         self.rerun_remote = rerun_remote
         self.visualize = visualize
         if visualize:
@@ -247,6 +254,18 @@ class Ros2Feature:
                 self.proc_queue.task_done()
                 continue
 
+            if self.frame_gate is not None and not self.frame_gate():
+                # Same reasoning as .active, one level finer: the consumer is
+                # running but cannot use this particular tick, so converting it
+                # would decode three camera frames and then drop them. Nothing
+                # is buffered -- the next tick brings a fresher frame, and
+                # FrameAssembler only ever reads the newest message per topic.
+                self.frames_skipped += 1
+                self.proc_queue.task_done()
+                continue
+
+            self.frames_converted += 1
+
             if self.use_rust_collector:
                 # Convert raw messages to tensors
                 converted_msgs = self._convert_raw_frame(frame)
@@ -289,6 +308,20 @@ class Ros2Feature:
     def set_active(self, active: bool):
         """Enable/disable per-frame conversion in _process_loop (see .active)."""
         self.active = active
+
+    def register_frame_gate(self, gate):
+        """Register a predicate consulted before each frame is converted.
+
+        Called with no arguments on the processing thread; returning False
+        skips decode/resize/tensor conversion for that tick only. Consumers
+        that need every frame (the recorder, or a policy with a progress
+        estimator filling a rolling window) simply do not register one.
+
+        Only effective with the Rust collector. On the Python fallback path
+        `_msg_callback` converts each message as it arrives, so by the time
+        the processing loop runs there is nothing left to skip.
+        """
+        self.frame_gate = gate
 
     def register_frame_callback(self, callback):
         """
