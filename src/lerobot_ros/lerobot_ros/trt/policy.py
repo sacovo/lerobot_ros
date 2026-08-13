@@ -1,6 +1,47 @@
+import json
 import os
 import torch
 from .engine import TRTEngineRunner
+
+
+def _check_engine_fingerprint(engine_path: str, model):
+    """Refuse an engine that was exported from a different model than `model`.
+
+    EpisodeTracker folds its normalization buffers into the traced graph, so an
+    engine built before those buffers existed (or from another checkpoint) is
+    numerically wrong while looking entirely healthy: same input names, same
+    shapes, and the Python-side bin_centers/window come from the eager model.
+    Nothing downstream would notice. Engines predating the sidecar only warn,
+    since the check cannot tell "old export" from "wrong export" without it.
+    """
+    expected = getattr(model, "graph_fingerprint", None)
+    if expected is None:
+        return
+
+    path = f"{os.path.splitext(engine_path)[0]}.fingerprint.json"
+    if not os.path.exists(path):
+        print(
+            f"WARNING: no fingerprint beside {engine_path}; cannot verify it was "
+            f"built from this checkpoint. Re-export to enable the check."
+        )
+        return
+
+    with open(path) as fh:
+        recorded = json.load(fh)
+
+    actual = expected()
+    if recorded.get("sha256") != actual["sha256"]:
+        differing = [
+            key
+            for key in actual
+            if key != "sha256" and recorded.get(key) != actual[key]
+        ]
+        raise ValueError(
+            f"TRT engine {engine_path} was exported from a different model than "
+            f"the loaded checkpoint (fingerprint {recorded.get('sha256')} != "
+            f"{actual['sha256']}; differing: {differing or 'unknown'}). Rebuild "
+            f"the engine from this checkpoint."
+        )
 
 def load_trt_policy(original_policy, engine_dir, device="cuda"):
     from lerobot.policies.act.modeling_act import ACTPolicy
@@ -62,6 +103,7 @@ class EpisodeTrackerTRTPolicy:
     """
     def __init__(self, engine_path: str, original_model):
         print(f"Loading EpisodeTracker TRT engine from {engine_path}...")
+        _check_engine_fingerprint(engine_path, original_model)
         self.runner = TRTEngineRunner(engine_path)
         self.progress_keys = original_model.progress_keys
         self.bin_centers = original_model.bin_centers

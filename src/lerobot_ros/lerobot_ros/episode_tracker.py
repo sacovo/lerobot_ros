@@ -1,4 +1,6 @@
 import datetime
+import hashlib
+import json
 import logging
 import math
 import random
@@ -44,18 +46,34 @@ def hl_gauss_target(scalar: torch.Tensor, edges: torch.Tensor, sigma: float) -> 
     return probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-8)
 
 
-def _stat_buffer(values: Optional[list[float]], dim: int, fill: float) -> torch.Tensor:
+_DEGENERATE_STD = 1e-6
+
+
+def _stat_buffer(
+    values: Optional[list[float]], dim: int, fill: float, is_std: bool = False
+) -> torch.Tensor:
     """Build a (dim,) normalization buffer, falling back to ``fill`` when unset.
 
-    Standard deviations are clamped away from zero: a channel that never varies
-    in the dataset has std 0 and would otherwise divide to inf/NaN.
+    A channel that never varies in the dataset has std 0, which would divide to
+    inf/NaN. Such channels are given a divisor of 1.0 -- i.e. left unnormalized
+    -- rather than clamped to a small epsilon. Clamping looks safe because the
+    numerator vanishes with the denominator on in-distribution data, but it
+    turns the channel into a ~1/eps amplifier the moment a value deviates at
+    inference: 64 of the 83 state dims here are TOF zones, and a masked or dead
+    zone (see the TOF_MASK topic) is exactly the constant channel that bites.
+    A channel with no variance carries no information, so passing it through
+    unscaled loses nothing.
     """
     if values is None:
         return torch.full((dim,), fill, dtype=torch.float32)
     tensor = torch.as_tensor(list(values), dtype=torch.float32)
     if tensor.numel() != dim:
         raise ValueError(f"expected {dim} normalization values, got {tensor.numel()}")
-    return tensor.clamp_min(1e-6) if fill == 1.0 else tensor
+    if is_std:
+        tensor = torch.where(
+            tensor > _DEGENERATE_STD, tensor, torch.ones_like(tensor)
+        )
+    return tensor
 
 
 class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
@@ -127,10 +145,11 @@ class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
         self.hl_gauss_sigma = hl_gauss_sigma_ratio / n_bins
 
         # State and action feed the GRU directly, so their raw scale matters.
-        # On the rover dataset the state mixes joint efforts (std ~1900) and
-        # gripper (std ~135) with TOF channels (std ~0.04) and projected image
-        # features (order 1) -- about five orders of magnitude. Without this the
-        # GRU is driven almost entirely by the effort channels.
+        # On the rover dataset the state alone spans about five orders of
+        # magnitude -- joint efforts (std ~1900) and gripper (std ~135) against
+        # TOF channels (std ~0.04) -- so without this the GRU is driven almost
+        # entirely by the effort channels. The image half of the fusion input is
+        # not covered here: image_proj is a learned projection and scales itself.
         #
         # These are buffers, not preprocessing, so save_pretrained carries them
         # and inference (policy_controller -> predict_progress) normalizes
@@ -140,10 +159,13 @@ class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
             "state_mean", _stat_buffer(state_mean, n_robot_state_inputs, 0.0)
         )
         self.register_buffer(
-            "state_std", _stat_buffer(state_std, n_robot_state_inputs, 1.0)
+            "state_std",
+            _stat_buffer(state_std, n_robot_state_inputs, 1.0, is_std=True),
         )
         self.register_buffer("action_mean", _stat_buffer(action_mean, n_actions, 0.0))
-        self.register_buffer("action_std", _stat_buffer(action_std, n_actions, 1.0))
+        self.register_buffer(
+            "action_std", _stat_buffer(action_std, n_actions, 1.0, is_std=True)
+        )
 
         total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         logger.info(f"Model initialized with {total_params:,} trainable parameters")
@@ -182,6 +204,31 @@ class EpisodeTracker(PyTorchModelHubMixin, nn.Module):
         logits = self.forward(batch)
         probs = torch.softmax(logits, dim=-1)
         return (probs * self.bin_centers.unsqueeze(0)).sum(dim=-1)
+
+    def graph_fingerprint(self) -> dict:
+        """Identity of everything an ONNX export freezes into the graph.
+
+        The normalization buffers are traced as constants, so an engine built
+        from one checkpoint and loaded against another computes different
+        numbers with no outward sign -- the engine still has the right input
+        names and shapes, and EpisodeTrackerTRTPolicy takes bin_centers and
+        window from the eager model, so nothing disagrees visibly. Exports
+        write this next to the ONNX and the TRT policy refuses a mismatch.
+        """
+        payload = {
+            "progress_keys": list(self.progress_keys),
+            "image_features": list(self.image_features),
+            "window": int(self.window),
+            "n_bins": int(self.n_bins),
+            "state_mean": [round(float(x), 6) for x in self.state_mean],
+            "state_std": [round(float(x), 6) for x in self.state_std],
+            "action_mean": [round(float(x), 6) for x in self.action_mean],
+            "action_std": [round(float(x), 6) for x in self.action_std],
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest()
+        return {"sha256": digest, **payload}
 
 
 def stack_progress_window(
@@ -522,12 +569,17 @@ def main(
     logger.info(f"State dimensions: {n_states}")
     logger.info(f"Action dimensions: {n_actions}")
 
-    # Normalization stats come from the full dataset metadata (not the train
-    # split) and are baked into the model as buffers, so inference applies the
-    # same transform. Plain lists keep them JSON-serializable for the
-    # PyTorchModelHubMixin config written by save_pretrained.
+    # Read off `metadata`, the unfiltered LeRobotDatasetMetadata built above,
+    # rather than ds.meta: ds was constructed with episodes=episodes_train, and
+    # whether .meta.stats then covers the whole dataset or only that subset has
+    # varied across lerobot versions. Taking them from the unfiltered handle
+    # makes the scope explicit instead of dependent on the pin.
+    #
+    # Baked into the model as buffers so inference applies the same transform.
+    # Plain lists keep them JSON-serializable for the PyTorchModelHubMixin
+    # config written by save_pretrained.
     def _stat(feature, key):
-        value = ds.meta.stats[feature][key]
+        value = metadata.stats[feature][key]
         return [float(x) for x in value]
 
     logger.info("Normalization: state/action standardized with dataset mean/std")

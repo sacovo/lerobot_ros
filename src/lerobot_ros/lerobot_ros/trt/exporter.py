@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import torch
 import torch.nn as nn
@@ -118,6 +119,17 @@ def export_episode_tracker(model, sample_batch, output_path):
 
     print(f"Exporting EpisodeTracker ONNX to {output_path}...")
     print(f"Input keys: {progress_keys}")
+
+    # Sidecar naming matters: build_trt_engine writes <base>.trt beside
+    # <base>.onnx, and package_engines.py copies *.json into the tarball, so
+    # <base>.fingerprint.json travels with the graph all the way to the device
+    # and lands next to the engine EpisodeTrackerTRTPolicy loads.
+    fingerprint = getattr(model, "graph_fingerprint", None)
+    if fingerprint is not None:
+        fingerprint_path = f"{os.path.splitext(output_path)[0]}.fingerprint.json"
+        with open(fingerprint_path, "w") as fh:
+            json.dump(fingerprint(), fh, indent=2, sort_keys=True)
+        print(f"Wrote graph fingerprint to {fingerprint_path}")
 
     _onnx_export(
         wrapper,
