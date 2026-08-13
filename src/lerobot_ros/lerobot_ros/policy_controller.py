@@ -568,9 +568,11 @@ class PolicyController:
         keeps three JPEG decodes off those ticks, measured at ~23 ms per tick
         in docs/live-ros-transport-benchmark.md.
 
-        A progress estimator changes the answer: it consumes a frame every tick
-        to fill its rolling window, so while one is loaded every frame is
-        genuinely needed and this returns True unconditionally.
+        A progress estimator changes the answer: it fills a rolling window from
+        the collected frames, so while one is loaded this conservatively returns
+        True for every tick. See the note at that branch -- with a strided
+        tracker most of those frames are not actually needed either, and
+        recovering them is the obvious next improvement here.
         """
         # Single read of the active policy: the property pair
         # (has_active_policy, active_config) can disagree if the goal ends
@@ -579,6 +581,21 @@ class PolicyController:
         if name is None or name not in self.policies or not self.collect_frames:
             return False
 
+        # TODO: honour the tracker's stride here instead of converting every
+        # tick. predict_loop samples its window every EpisodeTracker.stride
+        # frames, so a stride-10 tracker needs 2 Hz of converted frames, not
+        # 20 Hz -- meaning a loaded tracker currently forfeits ~0.83 cores of
+        # the saving this gate exists to capture (see
+        # docs/live-ros-transport-benchmark.md §2b).
+        #
+        # It is not just `tick % stride == 0` here: this runs on the subscriber
+        # thread while predict_loop owns the counter, and a second counter on
+        # this side would drift from it as soon as a frame is dropped, silently
+        # mis-spacing the window. The fix is to give the gate the collector's
+        # frame timestamp -- register_frame_gate() passes no arguments today --
+        # so both threads derive the same tick index from the same `t` with no
+        # shared state. Deferred until there is a trained tracker to validate
+        # against: a mis-spaced window reads as a mediocre model, not a bug.
         if self.progress_models.get(name) is not None:
             return True
 

@@ -314,12 +314,19 @@ class Ros2Feature:
 
         Called with no arguments on the processing thread; returning False
         skips decode/resize/tensor conversion for that tick only. Consumers
-        that need every frame (the recorder, or a policy with a progress
-        estimator filling a rolling window) simply do not register one.
+        that need every frame (the recorder) simply do not register one.
 
         Only effective with the Rust collector. On the Python fallback path
         `_msg_callback` converts each message as it arrives, so by the time
         the processing loop runs there is nothing left to skip.
+
+        Takes no arguments deliberately, for now: every current caller decides
+        from its own state. The one known reason to widen it is passing the
+        collector's frame timestamp `t` (already in hand in _process_loop), so
+        a gate can derive the same tick index as a consumer running on another
+        thread without sharing a counter -- see the TODO in
+        PolicyController.needs_frame. Add it as an optional argument when that
+        lands rather than breaking the existing signature.
         """
         self.frame_gate = gate
 
