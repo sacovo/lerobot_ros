@@ -384,7 +384,22 @@ class PolicyController:
         try:
             while True:
                 time.sleep(0.05)
-                elapsed = time.monotonic() - self._task_start_mono
+
+                # Read once. _stop() clears this back to None, and reading it
+                # twice (or dereferencing it directly) means a stop landing
+                # between the two reads kills this thread with a TypeError
+                # instead of ending the goal -- leaving the action server with
+                # a goal it never resolves and _goal_active stuck True, so
+                # every later goal is rejected as "busy". Today only the
+                # finally-block below calls _stop(), i.e. after this loop has
+                # exited; this keeps that from being a precondition.
+                started = self._task_start_mono
+                if started is None:
+                    goal_handle.abort()
+                    result.success = False
+                    result.message = "stopped"
+                    return result
+                elapsed = time.monotonic() - started
 
                 if goal_handle.is_cancel_requested:
                     goal_handle.canceled()
