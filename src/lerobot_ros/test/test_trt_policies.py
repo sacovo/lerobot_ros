@@ -207,6 +207,29 @@ def test_act_trt_matches_eager(tmp_path, fp16, tol):
 # SmolVLA family — prefix/suffix pair, flow matching over N steps
 # ---------------------------------------------------------------------------
 
+def _shrink_vla(cfg):
+    """Cut the VLA down to something an engine build can afford.
+
+    Both engines scale with the VLM: the prefix graph emits a key/value tensor
+    per layer and the suffix graph takes every one of them back as an input, so
+    16 layers means 32 extra graph edges carrying full-width tensors, and the
+    vision tower's cost scales with the patch count -- (512/16)^2 = 1024 patches
+    at the default resize. At stock size the four engines this file builds OOM a
+    15.6 GB Orin that is also running the rover stack.
+
+    Safe for a *differential* test specifically: 2 layers exercise the same
+    operator set as 16 (the layers are identical in kind, only repeated), and
+    the export flattens however many there are. What it gives up is numerical
+    drift that only accumulates with depth -- acceptable here because these
+    engines are built FP32, where per-layer drift is ~1e-7. Anything that scales
+    with model *size* rather than model *shape* belongs in the benchmarks, which
+    keep the deployed dimensions.
+    """
+    cfg.num_vlm_layers = 2
+    cfg.resize_imgs_with_padding = (128, 128)
+    return cfg
+
+
 def _vla_obs(cfg, seed=0):
     obs = _image_obs(seed)
     lang_len = getattr(cfg, "tokenizer_max_length", 48)
@@ -268,7 +291,7 @@ def _run_vla_differential(tmp_path, policy, cfg, mean_tol):
 def test_smolvla_trt_matches_eager(tmp_path):
     from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 
-    cfg = SmolVLAConfig(device=DEVICE, chunk_size=CHUNK, n_action_steps=CHUNK)
+    cfg = _shrink_vla(SmolVLAConfig(device=DEVICE, chunk_size=CHUNK, n_action_steps=CHUNK))
     policy = _make_policy(cfg)
     _run_vla_differential(tmp_path, policy, cfg, mean_tol=1e-2)
 
@@ -288,7 +311,7 @@ def test_recap_trt_matches_eager(tmp_path, snapflow):
     import lerobot_policy_smolvla_rl.modeling_smolvla_recap  # noqa: F401
     from lerobot_policy_smolvla_rl.configuration_smolvla_recap import SmolVLARECAPConfig
 
-    cfg = SmolVLARECAPConfig(device=DEVICE, chunk_size=CHUNK, n_action_steps=CHUNK)
+    cfg = _shrink_vla(SmolVLARECAPConfig(device=DEVICE, chunk_size=CHUNK, n_action_steps=CHUNK))
     cfg.snapflow_enabled = snapflow
     policy = _make_policy(cfg)
     _run_vla_differential(tmp_path, policy, cfg, mean_tol=1e-2)
