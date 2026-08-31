@@ -9,7 +9,7 @@ name = "rust_py_timer"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.25", features = ["extension-module"] }
+pyo3 = { version = "0.29", features = ["extension-module"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
